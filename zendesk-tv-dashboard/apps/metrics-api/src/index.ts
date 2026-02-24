@@ -298,6 +298,7 @@ app.get(
   "/api/metrics/snapshot",
   asyncRoute(async (_req, res) => {
     const snapshot = await getSnapshotOrThrow();
+    res.set("Cache-Control", "no-store");
     res.json(snapshot);
   })
 );

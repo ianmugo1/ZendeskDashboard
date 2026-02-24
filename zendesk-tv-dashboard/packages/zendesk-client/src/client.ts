@@ -24,9 +24,58 @@ interface RequestOptions {
 }
 
 interface RequestErrorShape {
-  error?: string;
+  error?: string | { title?: string; message?: string };
   description?: string;
+  message?: string;
   details?: unknown;
+}
+
+function normalizeZendeskSubdomain(rawValue: string): string {
+  const value = rawValue.trim().toLowerCase();
+  if (!value) {
+    return "";
+  }
+
+  const withoutProtocol = value.replace(/^https?:\/\//, "");
+  const host = withoutProtocol.split("/")[0] ?? withoutProtocol;
+
+  if (host.endsWith(".zendesk.com")) {
+    return host.replace(/\.zendesk\.com$/, "");
+  }
+
+  return host;
+}
+
+function getZendeskErrorMessage(parsedBody: RequestErrorShape | string | null, status: number): string {
+  if (typeof parsedBody === "string" && parsedBody.trim()) {
+    return parsedBody.trim();
+  }
+
+  if (parsedBody && typeof parsedBody === "object") {
+    if (typeof parsedBody.error === "string" && parsedBody.error.trim()) {
+      return parsedBody.description ? `${parsedBody.error}: ${parsedBody.description}` : parsedBody.error;
+    }
+
+    if (parsedBody.error && typeof parsedBody.error === "object") {
+      const title = typeof parsedBody.error.title === "string" ? parsedBody.error.title.trim() : "";
+      const message = typeof parsedBody.error.message === "string" ? parsedBody.error.message.trim() : "";
+      if (title && message) {
+        return `${title}: ${message}`;
+      }
+      if (title) {
+        return title;
+      }
+      if (message) {
+        return message;
+      }
+    }
+
+    if (typeof parsedBody.message === "string" && parsedBody.message.trim()) {
+      return parsedBody.message.trim();
+    }
+  }
+
+  return `Zendesk API request failed with status ${status}`;
 }
 
 export class ZendeskApiError extends Error {
@@ -55,12 +104,17 @@ export class ZendeskClient {
   }
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): ZendeskClient {
-    const subdomain = env.ZENDESK_SUBDOMAIN;
+    const rawSubdomain = env.ZENDESK_SUBDOMAIN;
     const email = env.ZENDESK_EMAIL;
     const apiToken = env.ZENDESK_API_TOKEN;
+    const subdomain = rawSubdomain ? normalizeZendeskSubdomain(rawSubdomain) : "";
 
     if (!subdomain || !email || !apiToken) {
       throw new Error("Missing Zendesk credentials. Set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN.");
+    }
+
+    if (subdomain === "your-subdomain") {
+      throw new Error("Invalid ZENDESK_SUBDOMAIN: replace placeholder 'your-subdomain' with your real Zendesk subdomain.");
     }
 
     return new ZendeskClient({ subdomain, email, apiToken });
@@ -297,10 +351,7 @@ export class ZendeskClient {
         continue;
       }
 
-      const errorMessage =
-        typeof parsedBody === "object" && parsedBody
-          ? `${parsedBody.error ?? "Zendesk API error"}${parsedBody.description ? `: ${parsedBody.description}` : ""}`
-          : `Zendesk API request failed with status ${response.status}`;
+      const errorMessage = getZendeskErrorMessage(parsedBody, response.status);
 
       throw new ZendeskApiError(errorMessage, response.status, parsedBody);
     }

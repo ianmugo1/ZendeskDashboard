@@ -17,6 +17,7 @@ interface DashboardProps {
 }
 
 const zendeskBaseUrl = process.env.NEXT_PUBLIC_ZENDESK_BASE_URL ?? "https://emeraldpark.zendesk.com";
+const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 function formatCount(value: number): string {
   return Number.isFinite(value) ? new Intl.NumberFormat("en-IE").format(value) : "0";
@@ -30,12 +31,25 @@ function formatHours(value: number): string {
   return Number.isFinite(value) ? `${value.toFixed(1)}h` : "0h";
 }
 
+function formatRefreshInterval(seconds: number): string {
+  if (seconds >= 60 && seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} min`;
+  }
+  return `${seconds}s`;
+}
+
 function formatAbsoluteDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) {
     return "n/a";
   }
-  return new Intl.DateTimeFormat("en-IE", { dateStyle: "medium", timeStyle: "short" }).format(date);
+  const day = date.getUTCDate();
+  const month = shortMonths[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year} at ${hour}:${minute} UTC`;
 }
 
 function formatUkDateFromYmd(dateString: string): string {
@@ -64,6 +78,7 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
   const [snapshot, setSnapshot] = useState<ZendeskSnapshot | null>(initialSnapshot);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const effectiveRefreshSeconds = Math.max(5, snapshot?.poll_interval_seconds ?? refreshSeconds);
 
   const fetchSnapshot = useCallback(async () => {
     setRefreshing(true);
@@ -87,9 +102,9 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
     if (!initialSnapshot) {
       void fetchSnapshot();
     }
-    const interval = setInterval(() => void fetchSnapshot(), refreshSeconds * 1000);
+    const interval = setInterval(() => void fetchSnapshot(), effectiveRefreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, [fetchSnapshot, initialSnapshot, refreshSeconds]);
+  }, [effectiveRefreshSeconds, fetchSnapshot, initialSnapshot]);
 
   const stale = useMemo(() => {
     if (!snapshot) {
@@ -99,8 +114,8 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
     if (Number.isNaN(generatedAtMs)) {
       return true;
     }
-    return Date.now() - generatedAtMs > refreshSeconds * 1000 * 3;
-  }, [refreshSeconds, snapshot]);
+    return Date.now() - generatedAtMs > effectiveRefreshSeconds * 1000 * 3;
+  }, [effectiveRefreshSeconds, snapshot]);
 
   if (!snapshot) {
     return (
@@ -126,7 +141,9 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
             <p className="text-slate-300">
               Last updated: <span className="mono-numbers text-slate-100">{formatAbsoluteDate(snapshot.generated_at)}</span>
             </p>
-            <p className={stale ? "text-rose-300" : "text-emerald-300"}>{refreshing ? "Refreshing now" : `Refreshes every ${refreshSeconds}s`}</p>
+            <p className={stale ? "text-rose-300" : "text-emerald-300"}>
+              {refreshing ? "Refreshing now" : `Refreshes every ${formatRefreshInterval(effectiveRefreshSeconds)}`}
+            </p>
             <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
               <a href="/audit" className="nav-link">Open Audit Page</a>
               <a href="/api/export/daily-summary" className="nav-link">Export Summary</a>

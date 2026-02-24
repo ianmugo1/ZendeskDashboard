@@ -113,7 +113,7 @@ npm run dev:dashboard
 ## Config knobs
 
 - `.env`:
-  - `POLL_INTERVAL_SECONDS` (minimum 60)
+  - `POLL_INTERVAL_SECONDS` (minimum 20)
   - `DASHBOARD_TIMEZONE`
   - `SNAPSHOT_STALE_AFTER_SECONDS`
   - `CACHE_BACKEND` (`redis` or `file`)

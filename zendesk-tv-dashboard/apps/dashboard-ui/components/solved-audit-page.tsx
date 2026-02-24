@@ -10,6 +10,7 @@ interface SolvedAuditPageProps {
 }
 
 const zendeskBaseUrl = process.env.NEXT_PUBLIC_ZENDESK_BASE_URL ?? "https://emeraldpark.zendesk.com";
+const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 function formatCount(value: number): string {
   if (!Number.isFinite(value)) {
@@ -23,11 +24,20 @@ function formatAbsoluteDate(dateString: string): string {
   if (Number.isNaN(date.getTime())) {
     return "n/a";
   }
+  const day = date.getUTCDate();
+  const month = shortMonths[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  const hour = String(date.getUTCHours()).padStart(2, "0");
+  const minute = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year} at ${hour}:${minute} UTC`;
+}
 
-  return new Intl.DateTimeFormat("en-IE", {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(date);
+function formatRefreshInterval(seconds: number): string {
+  if (seconds >= 60 && seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} min`;
+  }
+  return `${seconds}s`;
 }
 
 function formatAge(ageHours: number): string {
@@ -47,6 +57,7 @@ export function SolvedAuditPage({ initialSnapshot, refreshSeconds }: SolvedAudit
   const [refreshing, setRefreshing] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("all");
   const [auditSearch, setAuditSearch] = useState<string>("");
+  const effectiveRefreshSeconds = Math.max(5, snapshot?.poll_interval_seconds ?? refreshSeconds);
 
   const fetchSnapshot = useCallback(async () => {
     setRefreshing(true);
@@ -74,10 +85,10 @@ export function SolvedAuditPage({ initialSnapshot, refreshSeconds }: SolvedAudit
 
     const interval = setInterval(() => {
       void fetchSnapshot();
-    }, refreshSeconds * 1000);
+    }, effectiveRefreshSeconds * 1000);
 
     return () => clearInterval(interval);
-  }, [fetchSnapshot, initialSnapshot, refreshSeconds]);
+  }, [effectiveRefreshSeconds, fetchSnapshot, initialSnapshot]);
 
   const allAgents = useMemo(() => {
     return snapshot?.all_agents ?? snapshot?.agent_audit ?? [];
@@ -123,7 +134,9 @@ export function SolvedAuditPage({ initialSnapshot, refreshSeconds }: SolvedAudit
             <p className="text-slate-300">
               Last updated: <span className="mono-numbers text-slate-100">{formatAbsoluteDate(snapshot.generated_at)}</span>
             </p>
-            <p className="text-slate-300">{refreshing ? "Refreshing now" : `Refreshes every ${refreshSeconds}s`}</p>
+            <p className="text-slate-300">
+              {refreshing ? "Refreshing now" : `Refreshes every ${formatRefreshInterval(effectiveRefreshSeconds)}`}
+            </p>
             <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
               <a href="/" className="nav-link">
                 Back To Dashboard
