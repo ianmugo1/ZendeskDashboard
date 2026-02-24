@@ -1,0 +1,23 @@
+{
+  "name": "zendesk-tv-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:dashboard": "npm run build --workspace @zendesk/zendesk-client && npm run dev --workspace @zendesk/dashboard-ui",
+    "dev:api": "npm run build --workspace @zendesk/zendesk-client && npm run dev --workspace @zendesk/metrics-api",
+    "dev:worker": "npm run build --workspace @zendesk/zendesk-client && npm run dev --workspace @zendesk/worker",
+    "dev": "npm run build --workspace @zendesk/zendesk-client && concurrently -k -n api,worker,ui -c blue,green,magenta \"npm run dev --workspace @zendesk/metrics-api\" \"npm run dev --workspace @zendesk/worker\" \"npm run dev --workspace @zendesk/dashboard-ui\"",
+    "build": "npm run build --workspace @zendesk/zendesk-client && npm run build --workspace @zendesk/metrics-api && npm run build --workspace @zendesk/worker && npm run build --workspace @zendesk/dashboard-ui",
+    "typecheck": "npm run build --workspace @zendesk/zendesk-client && npm run typecheck --workspace @zendesk/metrics-api && npm run typecheck --workspace @zendesk/worker && npm run typecheck --workspace @zendesk/dashboard-ui"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
