@@ -1,0 +1,19 @@
+{
+  "name": "@zendesk/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@zendesk/zendesk-client": "*",
+    "dotenv": "^16.6.1",
+    "pino": "^9.9.5",
+    "redis": "^4.7.1"
+  }
+}
