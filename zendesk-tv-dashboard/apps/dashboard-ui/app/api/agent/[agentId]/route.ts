@@ -1,14 +1,20 @@
 import { NextResponse } from "next/server";
-import { getMetricsApiHeaders } from "../../../lib/metrics-auth";
+import { getMetricsApiHeaders } from "../../../../lib/metrics-auth";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+interface RouteParams {
+  params: Promise<{ agentId: string }>;
+}
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request, { params }: RouteParams): Promise<NextResponse> {
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
+  const resolvedParams = await params;
+  const agentId = resolvedParams.agentId;
+  const url = new URL(request.url);
+  const windowDays = url.searchParams.get("window_days") ?? "7";
+  const metricsUrl = `${apiBaseUrl}/api/metrics/agent/${encodeURIComponent(agentId)}?window_days=${encodeURIComponent(windowDays)}`;
 
   try {
-    const response = await fetch(`${apiBaseUrl}/api/metrics/snapshot`, {
+    const response = await fetch(metricsUrl, {
       cache: "no-store",
       headers: getMetricsApiHeaders()
     });

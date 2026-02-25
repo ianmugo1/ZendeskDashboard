@@ -263,6 +263,9 @@ export interface ZendeskSnapshot {
   tickets_by_tag: TagCount[];
   daily_summary: DailySummarySnapshot;
   alerts: SnapshotAlerts;
+  snapshot_mode?: "light" | "heavy";
+  core_generated_at?: string;
+  heavy_generated_at?: string;
   generated_at: string;
   poll_interval_seconds: number;
   window_timezone: string;

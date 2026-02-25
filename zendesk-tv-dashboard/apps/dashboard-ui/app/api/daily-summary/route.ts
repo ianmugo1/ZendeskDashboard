@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
+import { getMetricsApiHeaders } from "../../../lib/metrics-auth";
 
 export async function GET(): Promise<NextResponse> {
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
 
   try {
     const response = await fetch(`${apiBaseUrl}/api/metrics/summary/daily`, {
-      cache: "no-store"
+      cache: "no-store",
+      headers: getMetricsApiHeaders()
     });
 
     const payload = (await response.json().catch(() => ({ error: "Invalid API response." }))) as unknown;

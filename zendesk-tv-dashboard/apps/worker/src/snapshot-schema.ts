@@ -285,6 +285,16 @@ export function validateSnapshotOrThrow(snapshot: ZendeskSnapshot): void {
   validateAlertMetric(snapshot.alerts.unassigned, "alerts.unassigned");
   assertFiniteNumber(snapshot.alerts.active_count, "alerts.active_count");
 
+  if (snapshot.snapshot_mode !== undefined && snapshot.snapshot_mode !== "light" && snapshot.snapshot_mode !== "heavy") {
+    throw new Error("Snapshot validation failed: snapshot_mode must be 'light' or 'heavy' when provided.");
+  }
+  if (snapshot.core_generated_at !== undefined) {
+    assertDateString(snapshot.core_generated_at, "core_generated_at");
+  }
+  if (snapshot.heavy_generated_at !== undefined) {
+    assertDateString(snapshot.heavy_generated_at, "heavy_generated_at");
+  }
+
   assertDateString(snapshot.generated_at, "generated_at");
   assertFiniteNumber(snapshot.poll_interval_seconds, "poll_interval_seconds");
   assertString(snapshot.window_timezone, "window_timezone");

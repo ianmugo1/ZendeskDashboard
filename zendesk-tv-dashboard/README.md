@@ -4,11 +4,11 @@ Internal dashboard stack for Zendesk operational metrics.
 
 ## Repo layout
 
-- `apps/dashboard-ui`: Next.js App Router UI (Tailwind, dark TV layout, basic auth, 20s refresh).
+- `apps/dashboard-ui`: Next.js App Router UI (Tailwind, dark TV layout, basic auth, configurable refresh).
   - `/`: management KPI dashboard
   - `/audit`: solved tickets audit page with agent + keyword filtering
 - `apps/metrics-api`: Express API that serves cached snapshot from Redis or file cache.
-- `apps/worker`: polling worker that aggregates Zendesk metrics every 60+ seconds.
+- `apps/worker`: polling worker with light and heavy refresh modes for Zendesk aggregation.
 - `packages/zendesk-client`: typed Zendesk API wrapper with auth + retry/backoff.
 - `config/dashboard.config.json`: config file for tags/groups/views.
 
@@ -16,7 +16,8 @@ Internal dashboard stack for Zendesk operational metrics.
 
 - Caching is mandatory and enforced: worker writes one snapshot payload to cache (`redis` key or local snapshot file).
 - Zendesk is never called from the browser.
-- Poll frequency is clamped to a minimum of 60 seconds.
+- Poll frequency is clamped to a minimum of 20 seconds.
+- Heavy snapshot sections can refresh on a separate, slower cadence (`HEAVY_REFRESH_INTERVAL_SECONDS`).
 - Metrics in snapshot:
   - `unsolved_count`
   - `daily_tickets` (`today`, `yesterday`, `last_7_days`)
@@ -105,17 +106,30 @@ npm run dev:dashboard
 - `GET /health` (metrics API): service + cache backend health.
 - `GET /api/metrics/snapshot` (metrics API): current cached dashboard payload.
 - `GET /api/metrics/summary/daily` (metrics API): daily compliance summary slice.
+- `GET /api/metrics/worker-status` (metrics API): worker health, failures, and last successful poll.
+- `GET /api/metrics/audit/solved` (metrics API): server-side paginated solved-ticket audit rows.
+- `POST /api/metrics/refresh` (metrics API): request an immediate heavy refresh from worker.
 - `GET /api/metrics/screenshot/latest` (metrics API): latest PNG screenshot for Teams cards.
 - `GET /api/metrics/export/:dataset` (metrics API): CSV exports (`agent-performance`, `solved-tickets-7d`, `reopened-tickets-30d`, `group-workload`, `high-priority-risk`, `daily-summary`).
 - `GET /api/snapshot` (dashboard UI): proxy to metrics API for browser refresh.
 - `GET /api/export/:dataset` (dashboard UI): proxy CSV download endpoint.
+- `POST /api/refresh` (dashboard UI): proxy refresh trigger endpoint.
+- `GET/POST/DELETE /api/audit/presets` (dashboard UI): shared saved filter presets for audit page.
 
 ## Config knobs
 
 - `.env`:
   - `POLL_INTERVAL_SECONDS` (minimum 20)
+  - `HEAVY_REFRESH_INTERVAL_SECONDS` (minimum `POLL_INTERVAL_SECONDS`)
+  - `ZENDESK_RATE_LIMIT_LOW_WATERMARK`
+  - `ZENDESK_RATE_LIMIT_CRITICAL_WATERMARK`
+  - `SNAPSHOT_LOCK_KEY` (redis poll lock key for single-active worker)
+  - `REFRESH_REQUEST_FILE_PATH` (file signal used by API and worker for manual force refresh)
   - `DASHBOARD_TIMEZONE`
   - `SNAPSHOT_STALE_AFTER_SECONDS`
+  - `METRICS_CORS_ORIGINS`
+  - `METRICS_API_TOKEN`
+  - `WORKER_STATUS_FILE_PATH`
   - `CACHE_BACKEND` (`redis` or `file`)
   - `SNAPSHOT_FILE_PATH`
   - `MAX_TICKET_SCAN`
@@ -123,6 +137,8 @@ npm run dev:dashboard
   - `MAX_AGENT_SCAN`
   - `TICKETS_BY_TAG_LIST`
   - `DASHBOARD_REFRESH_SECONDS`
+  - `DASHBOARD_ANALYST_AUTH_USERNAME` / `DASHBOARD_ANALYST_AUTH_PASSWORD` (optional analyst role)
+  - `DASHBOARD_ADMIN_AUTH_USERNAME` / `DASHBOARD_ADMIN_AUTH_PASSWORD` (optional: required for `/api/export/*`)
   - `NEXT_PUBLIC_ZENDESK_BASE_URL`
   - `WIDGETS_TOP_SOLVERS`
   - `WIDGETS_TICKETS_BY_TAG`

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getMetricsApiHeaders } from "../../../../lib/metrics-auth";
 
 interface RouteParams {
   params: Promise<{ dataset: string }>;
@@ -8,10 +9,14 @@ export async function GET(_request: Request, { params }: RouteParams): Promise<N
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
   const resolvedParams = await params;
   const dataset = resolvedParams.dataset;
+  const url = new URL(_request.url);
+  const includeMetadata = url.searchParams.get("meta") === "1";
+  const exportUrl = `${apiBaseUrl}/api/metrics/export/${encodeURIComponent(dataset)}${includeMetadata ? "?meta=1" : ""}`;
 
   try {
-    const response = await fetch(`${apiBaseUrl}/api/metrics/export/${encodeURIComponent(dataset)}`, {
-      cache: "no-store"
+    const response = await fetch(exportUrl, {
+      cache: "no-store",
+      headers: getMetricsApiHeaders()
     });
 
     if (!response.ok) {

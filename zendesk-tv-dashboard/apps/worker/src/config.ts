@@ -41,8 +41,13 @@ export interface WorkerConfig {
   cacheBackend: CacheBackend;
   redisUrl: string;
   snapshotKey: string;
+  lockKey: string;
+  refreshRequestFilePath: string;
   snapshotFilePath: string;
   pollIntervalSeconds: number;
+  heavyRefreshIntervalSeconds: number;
+  rateLimitLowWatermark: number;
+  rateLimitCriticalWatermark: number;
   maxTicketScan: number;
   maxSolvedAuditTickets: number;
   maxAgentScan: number;
@@ -162,9 +167,15 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
   const cacheBackend = parseCacheBackend(env.CACHE_BACKEND);
   const redisUrl = env.REDIS_URL ?? "redis://localhost:6379";
   const snapshotKey = env.SNAPSHOT_KEY ?? "zendesk:snapshot";
+  const lockKey = env.SNAPSHOT_LOCK_KEY ?? `${snapshotKey}:poll-lock`;
+  const refreshRequestFilePath = resolvePathForReadWrite(env.REFRESH_REQUEST_FILE_PATH ?? "./data/refresh-request.json");
   const snapshotFilePath = resolvePathForReadWrite(env.SNAPSHOT_FILE_PATH ?? "./data/zendesk-snapshot.json");
   const requestedPollInterval = parseInteger(env.POLL_INTERVAL_SECONDS, 20);
   const pollIntervalSeconds = Math.max(20, requestedPollInterval);
+  const requestedHeavyRefreshInterval = parseInteger(env.HEAVY_REFRESH_INTERVAL_SECONDS, Math.max(1800, pollIntervalSeconds * 2));
+  const heavyRefreshIntervalSeconds = Math.max(pollIntervalSeconds, requestedHeavyRefreshInterval);
+  const rateLimitLowWatermark = Math.max(1, parseInteger(env.ZENDESK_RATE_LIMIT_LOW_WATERMARK, 100));
+  const rateLimitCriticalWatermark = Math.max(1, parseInteger(env.ZENDESK_RATE_LIMIT_CRITICAL_WATERMARK, 20));
   const maxTicketScan = Math.max(100, parseInteger(env.MAX_TICKET_SCAN, 500));
   const maxSolvedAuditTickets = Math.max(50, parseInteger(env.MAX_SOLVED_AUDIT_TICKETS, 300));
   const maxAgentScan = Math.max(50, parseInteger(env.MAX_AGENT_SCAN, 500));
@@ -215,8 +226,13 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     cacheBackend,
     redisUrl,
     snapshotKey,
+    lockKey,
+    refreshRequestFilePath,
     snapshotFilePath,
     pollIntervalSeconds,
+    heavyRefreshIntervalSeconds,
+    rateLimitLowWatermark,
+    rateLimitCriticalWatermark,
     maxTicketScan,
     maxSolvedAuditTickets,
     maxAgentScan,

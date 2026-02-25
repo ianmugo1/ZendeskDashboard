@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { ZendeskClient } from "@zendesk/zendesk-client";
 import type { ZendeskSnapshot } from "@zendesk/zendesk-client";
 import { createClient } from "redis";
@@ -18,6 +19,79 @@ const zendeskClient = ZendeskClient.fromEnv();
 const teamsNotifier = createTeamsNotifier(config.teamsNotify, logger);
 
 let pollInFlight = false;
+let previousSnapshot: ZendeskSnapshot | null = null;
+let lastHeavyRefreshAtMs = 0;
+let lastSnapshotFingerprint: string | null = null;
+let consecutiveFailures = 0;
+let lastErrorMessage: string | null = null;
+let lastRateLimitRemaining: number | null = null;
+let lastRateLimitLimit: number | null = null;
+let lastRateLimitResetSeconds: number | null = null;
+let lastRefreshRequestId: string | null = null;
+let refreshMonitor: NodeJS.Timeout | null = null;
+
+function snapshotFingerprint(snapshot: ZendeskSnapshot): string {
+  const normalized: ZendeskSnapshot = {
+    ...snapshot,
+    generated_at: "",
+    core_generated_at: "",
+    daily_summary: {
+      ...snapshot.daily_summary,
+      generated_at: ""
+    }
+  };
+  return JSON.stringify(normalized);
+}
+
+async function persistWorkerStatus(lastSuccessfulPollAt: string | null): Promise<void> {
+  const statusPath = path.resolve(path.dirname(config.snapshotFilePath), "worker-status.json");
+  await fs.mkdir(path.dirname(statusPath), { recursive: true });
+  await fs.writeFile(
+    statusPath,
+    JSON.stringify(
+      {
+        poll_interval_seconds: config.pollIntervalSeconds,
+        heavy_refresh_interval_seconds: config.heavyRefreshIntervalSeconds,
+        consecutive_failures: consecutiveFailures,
+        last_error: lastErrorMessage,
+        last_successful_poll_at: lastSuccessfulPollAt,
+        rate_limit_remaining: lastRateLimitRemaining,
+        rate_limit_limit: lastRateLimitLimit,
+        rate_limit_reset_seconds: lastRateLimitResetSeconds
+      },
+      null,
+      2
+    ),
+    "utf-8"
+  );
+}
+
+async function tryAcquirePollLock(lockToken: string): Promise<boolean> {
+  if (config.cacheBackend !== "redis" || !redisClient) {
+    return true;
+  }
+
+  const lockTtlSeconds = Math.max(config.pollIntervalSeconds * 2, 120);
+  const reply = await redisClient.set(config.lockKey, lockToken, {
+    NX: true,
+    EX: lockTtlSeconds
+  });
+  return reply === "OK";
+}
+
+async function releasePollLock(lockToken: string): Promise<void> {
+  if (config.cacheBackend !== "redis" || !redisClient) {
+    return;
+  }
+  const script = `
+    if redis.call("GET", KEYS[1]) == ARGV[1] then
+      return redis.call("DEL", KEYS[1])
+    else
+      return 0
+    end
+  `;
+  await redisClient.sendCommand(["EVAL", script, "1", config.lockKey, lockToken]);
+}
 
 async function persistSnapshot(snapshot: ZendeskSnapshot): Promise<void> {
   if (config.cacheBackend === "redis" && redisClient) {
@@ -32,7 +106,49 @@ async function persistSnapshot(snapshot: ZendeskSnapshot): Promise<void> {
   await fs.writeFile(outputPath, JSON.stringify(snapshot), "utf-8");
 }
 
-async function runPoll(): Promise<void> {
+async function loadExistingSnapshot(): Promise<ZendeskSnapshot | null> {
+  try {
+    if (config.cacheBackend === "redis" && redisClient) {
+      const rawSnapshot = await redisClient.get(config.snapshotKey);
+      if (!rawSnapshot) {
+        return null;
+      }
+      const snapshot = JSON.parse(rawSnapshot) as ZendeskSnapshot;
+      validateSnapshotOrThrow(snapshot);
+      return snapshot;
+    }
+
+    const rawSnapshot = await fs.readFile(config.snapshotFilePath, "utf-8");
+    const snapshot = JSON.parse(rawSnapshot) as ZendeskSnapshot;
+    validateSnapshotOrThrow(snapshot);
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+async function readRefreshRequest(): Promise<{ requestId: string; requestedAtMs: number; forceHeavy: boolean } | null> {
+  try {
+    const raw = await fs.readFile(config.refreshRequestFilePath, "utf-8");
+    const parsed = JSON.parse(raw) as { request_id?: unknown; requested_at?: unknown; force_heavy?: unknown };
+    if (typeof parsed.request_id !== "string" || typeof parsed.requested_at !== "string") {
+      return null;
+    }
+    const requestedAtMs = Date.parse(parsed.requested_at);
+    if (Number.isNaN(requestedAtMs)) {
+      return null;
+    }
+    return {
+      requestId: parsed.request_id,
+      requestedAtMs,
+      forceHeavy: parsed.force_heavy !== false
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}): Promise<void> {
   if (pollInFlight) {
     logger.warn("Skipping poll because previous run is still in progress.");
     return;
@@ -40,8 +156,70 @@ async function runPoll(): Promise<void> {
 
   pollInFlight = true;
   const startedAt = Date.now();
+  const lockToken = randomUUID();
+  let lockAcquired = false;
 
   try {
+    lockAcquired = await tryAcquirePollLock(lockToken);
+    if (!lockAcquired) {
+      logger.info(
+        {
+          cache_backend: config.cacheBackend,
+          lock_key: config.lockKey
+        },
+        "Skipping poll because another worker holds the lock."
+      );
+      return;
+    }
+
+    const nowMs = Date.now();
+    let includeHeavyData =
+      options.forceHeavy === true ||
+      !previousSnapshot ||
+      nowMs - lastHeavyRefreshAtMs >= config.heavyRefreshIntervalSeconds * 1000;
+
+    const rateSnapshotBeforePoll = zendeskClient.getRateLimitSnapshot();
+    if (rateSnapshotBeforePoll.remaining !== null) {
+      lastRateLimitRemaining = rateSnapshotBeforePoll.remaining;
+      lastRateLimitLimit = rateSnapshotBeforePoll.limit;
+      lastRateLimitResetSeconds = rateSnapshotBeforePoll.resetSeconds;
+      if (rateSnapshotBeforePoll.remaining <= config.rateLimitCriticalWatermark && !options.forceHeavy) {
+        logger.warn(
+          {
+            rate_limit_remaining: rateSnapshotBeforePoll.remaining,
+            rate_limit_limit: rateSnapshotBeforePoll.limit,
+            rate_limit_reset_seconds: rateSnapshotBeforePoll.resetSeconds
+          },
+          "Skipping poll due to critical Zendesk API rate-limit budget."
+        );
+        await persistWorkerStatus(previousSnapshot?.generated_at ?? null);
+        return;
+      }
+
+      if (rateSnapshotBeforePoll.remaining <= config.rateLimitLowWatermark && includeHeavyData && previousSnapshot) {
+        if (options.forceHeavy) {
+          logger.warn(
+            {
+              rate_limit_remaining: rateSnapshotBeforePoll.remaining,
+              rate_limit_limit: rateSnapshotBeforePoll.limit,
+              rate_limit_reset_seconds: rateSnapshotBeforePoll.resetSeconds
+            },
+            "Running forced heavy poll even though Zendesk API rate-limit budget is low."
+          );
+        } else {
+          includeHeavyData = false;
+          logger.warn(
+            {
+              rate_limit_remaining: rateSnapshotBeforePoll.remaining,
+              rate_limit_limit: rateSnapshotBeforePoll.limit,
+              rate_limit_reset_seconds: rateSnapshotBeforePoll.resetSeconds
+            },
+            "Downgrading heavy poll to light poll due to low Zendesk API rate-limit budget."
+          );
+        }
+      }
+    }
+
     const snapshot = await buildZendeskSnapshot({
       client: zendeskClient,
       dashboardConfig: config.dashboardConfig,
@@ -49,6 +227,8 @@ async function runPoll(): Promise<void> {
       maxSolvedAuditTickets: config.maxSolvedAuditTickets,
       maxAgentScan: config.maxAgentScan,
       pollIntervalSeconds: config.pollIntervalSeconds,
+      includeHeavyData,
+      previousSnapshot,
       timeZone: config.dashboardTimezone,
       alertThresholds: config.alertThresholds,
       slaTargets: config.slaTargets,
@@ -57,7 +237,23 @@ async function runPoll(): Promise<void> {
     });
 
     validateSnapshotOrThrow(snapshot);
-    await persistSnapshot(snapshot);
+    const nextFingerprint = snapshotFingerprint(snapshot);
+    const snapshotChanged = nextFingerprint !== lastSnapshotFingerprint;
+    if (snapshotChanged) {
+      await persistSnapshot(snapshot);
+      previousSnapshot = snapshot;
+      lastSnapshotFingerprint = nextFingerprint;
+    }
+    const rateSnapshot = zendeskClient.getRateLimitSnapshot();
+    lastRateLimitRemaining = rateSnapshot.remaining;
+    lastRateLimitLimit = rateSnapshot.limit;
+    lastRateLimitResetSeconds = rateSnapshot.resetSeconds;
+    consecutiveFailures = 0;
+    lastErrorMessage = null;
+    await persistWorkerStatus(snapshot.generated_at);
+    if (includeHeavyData) {
+      lastHeavyRefreshAtMs = nowMs;
+    }
     try {
       await teamsNotifier.maybeNotify(snapshot);
     } catch (error) {
@@ -69,6 +265,13 @@ async function runPoll(): Promise<void> {
         duration_ms: Date.now() - startedAt,
         cache_backend: config.cacheBackend,
         key: config.cacheBackend === "redis" ? config.snapshotKey : config.snapshotFilePath,
+        snapshot_mode: includeHeavyData ? "heavy" : "light",
+        snapshot_changed: snapshotChanged,
+        poll_reason: options.reason ?? "scheduled",
+        heavy_refresh_interval_seconds: config.heavyRefreshIntervalSeconds,
+        rate_limit_remaining: lastRateLimitRemaining,
+        rate_limit_limit: lastRateLimitLimit,
+        rate_limit_reset_seconds: lastRateLimitResetSeconds,
         generated_at: snapshot.generated_at,
         unsolved_count: snapshot.unsolved_count,
         active_alert_count: snapshot.alerts.active_count
@@ -76,6 +279,13 @@ async function runPoll(): Promise<void> {
       "Snapshot updated"
     );
   } catch (error) {
+    const rateSnapshot = zendeskClient.getRateLimitSnapshot();
+    lastRateLimitRemaining = rateSnapshot.remaining;
+    lastRateLimitLimit = rateSnapshot.limit;
+    lastRateLimitResetSeconds = rateSnapshot.resetSeconds;
+    consecutiveFailures += 1;
+    lastErrorMessage = error instanceof Error ? error.message : String(error);
+    await persistWorkerStatus(previousSnapshot?.generated_at ?? null);
     logger.error(
       {
         err: error,
@@ -84,6 +294,13 @@ async function runPoll(): Promise<void> {
       "Failed to update snapshot"
     );
   } finally {
+    if (lockAcquired) {
+      try {
+        await releasePollLock(lockToken);
+      } catch (lockReleaseError) {
+        logger.warn({ err: lockReleaseError }, "Failed to release worker poll lock cleanly.");
+      }
+    }
     pollInFlight = false;
   }
 }
@@ -98,13 +315,28 @@ async function bootstrap(): Promise<void> {
     await fs.mkdir(path.dirname(config.snapshotFilePath), { recursive: true });
   }
 
+  previousSnapshot = await loadExistingSnapshot();
+  if (previousSnapshot) {
+    const existingGeneratedAtMs = Date.parse(previousSnapshot.generated_at);
+    if (!Number.isNaN(existingGeneratedAtMs)) {
+      lastHeavyRefreshAtMs = existingGeneratedAtMs;
+    }
+    lastSnapshotFingerprint = snapshotFingerprint(previousSnapshot);
+  }
+  await persistWorkerStatus(previousSnapshot?.generated_at ?? null);
+
   logger.info(
     {
       cache_backend: config.cacheBackend,
       redis_url: config.cacheBackend === "redis" ? config.redisUrl : undefined,
       snapshot_key: config.cacheBackend === "redis" ? config.snapshotKey : undefined,
+      lock_key: config.cacheBackend === "redis" ? config.lockKey : undefined,
+      refresh_request_file_path: config.refreshRequestFilePath,
       snapshot_file_path: config.cacheBackend === "file" ? config.snapshotFilePath : undefined,
       poll_interval_seconds: config.pollIntervalSeconds,
+      heavy_refresh_interval_seconds: config.heavyRefreshIntervalSeconds,
+      rate_limit_low_watermark: config.rateLimitLowWatermark,
+      rate_limit_critical_watermark: config.rateLimitCriticalWatermark,
       dashboard_timezone: config.dashboardTimezone,
       alert_thresholds: config.alertThresholds,
       sla_targets: config.slaTargets,
@@ -122,10 +354,40 @@ async function bootstrap(): Promise<void> {
 
   await runPoll();
   setInterval(runPoll, config.pollIntervalSeconds * 1000);
+  refreshMonitor = setInterval(() => {
+    void (async () => {
+      const refreshRequest = await readRefreshRequest();
+      if (!refreshRequest) {
+        return;
+      }
+      if (refreshRequest.requestId === lastRefreshRequestId) {
+        return;
+      }
+      lastRefreshRequestId = refreshRequest.requestId;
+      logger.info(
+        {
+          request_id: refreshRequest.requestId,
+          force_heavy: refreshRequest.forceHeavy,
+          requested_at_ms: refreshRequest.requestedAtMs
+        },
+        "Received manual refresh request."
+      );
+      await runPoll({
+        forceHeavy: refreshRequest.forceHeavy,
+        reason: "manual_refresh"
+      });
+    })().catch((error) => {
+      logger.warn({ err: error }, "Failed to process refresh request.");
+    });
+  }, 5000);
 }
 
 async function shutdown(): Promise<void> {
   logger.info("Worker shutting down");
+  if (refreshMonitor) {
+    clearInterval(refreshMonitor);
+    refreshMonitor = null;
+  }
   if (config.cacheBackend === "redis" && redisClient) {
     try {
       await redisClient.quit();

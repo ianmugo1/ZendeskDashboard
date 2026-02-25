@@ -95,6 +95,9 @@ export class ZendeskClient {
   private readonly authHeader: string;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
+  private lastRateLimitRemaining: number | null = null;
+  private lastRateLimitLimit: number | null = null;
+  private lastRateLimitResetSeconds: number | null = null;
 
   constructor(options: ZendeskClientOptions) {
     this.baseUrl = `https://${options.subdomain}.zendesk.com`;
@@ -294,6 +297,14 @@ export class ZendeskClient {
     return groups.slice(0, cappedLimit);
   }
 
+  getRateLimitSnapshot(): { remaining: number | null; limit: number | null; resetSeconds: number | null } {
+    return {
+      remaining: this.lastRateLimitRemaining,
+      limit: this.lastRateLimitLimit,
+      resetSeconds: this.lastRateLimitResetSeconds
+    };
+  }
+
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const url = new URL(path, this.baseUrl);
     if (options.params) {
@@ -329,6 +340,15 @@ export class ZendeskClient {
       }
 
       clearTimeout(timeout);
+      const remainingHeader = response.headers.get("x-rate-limit-remaining") ?? response.headers.get("ratelimit-remaining");
+      const limitHeader = response.headers.get("x-rate-limit") ?? response.headers.get("ratelimit-limit");
+      const resetHeader = response.headers.get("ratelimit-reset") ?? response.headers.get("x-rate-limit-reset");
+      const remaining = remainingHeader ? Number.parseInt(remainingHeader, 10) : Number.NaN;
+      const limit = limitHeader ? Number.parseInt(limitHeader, 10) : Number.NaN;
+      const resetSeconds = resetHeader ? Number.parseInt(resetHeader, 10) : Number.NaN;
+      this.lastRateLimitRemaining = Number.isNaN(remaining) ? this.lastRateLimitRemaining : remaining;
+      this.lastRateLimitLimit = Number.isNaN(limit) ? this.lastRateLimitLimit : limit;
+      this.lastRateLimitResetSeconds = Number.isNaN(resetSeconds) ? this.lastRateLimitResetSeconds : resetSeconds;
 
       if (response.ok) {
         return (await response.json()) as T;

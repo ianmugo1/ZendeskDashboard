@@ -10,11 +10,28 @@ function unauthorized(): NextResponse {
   });
 }
 
-export function middleware(request: NextRequest): NextResponse {
-  const username = process.env.DASHBOARD_BASIC_AUTH_USERNAME;
-  const password = process.env.DASHBOARD_BASIC_AUTH_PASSWORD;
+function safeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return mismatch === 0;
+}
 
-  if (!username || !password) {
+type DashboardRole = "viewer" | "analyst" | "admin" | "none";
+
+export function middleware(request: NextRequest): NextResponse {
+  const viewerUsername = process.env.DASHBOARD_BASIC_AUTH_USERNAME;
+  const viewerPassword = process.env.DASHBOARD_BASIC_AUTH_PASSWORD;
+  const analystUsername = process.env.DASHBOARD_ANALYST_AUTH_USERNAME;
+  const analystPassword = process.env.DASHBOARD_ANALYST_AUTH_PASSWORD;
+  const adminUsername = process.env.DASHBOARD_ADMIN_AUTH_USERNAME;
+  const adminPassword = process.env.DASHBOARD_ADMIN_AUTH_PASSWORD;
+
+  if (!viewerUsername || !viewerPassword) {
     return NextResponse.next();
   }
 
@@ -24,16 +41,51 @@ export function middleware(request: NextRequest): NextResponse {
   }
 
   const encoded = authHeader.replace("Basic ", "").trim();
-  const decoded = atob(encoded);
+  let decoded = "";
+  try {
+    decoded = atob(encoded);
+  } catch {
+    return unauthorized();
+  }
   const separatorIndex = decoded.indexOf(":");
   const suppliedUsername = separatorIndex >= 0 ? decoded.slice(0, separatorIndex) : "";
   const suppliedPassword = separatorIndex >= 0 ? decoded.slice(separatorIndex + 1) : "";
 
-  if (suppliedUsername !== username || suppliedPassword !== password) {
+  const isViewer = safeEqual(suppliedUsername, viewerUsername) && safeEqual(suppliedPassword, viewerPassword);
+  const hasAnalystCredentialsConfigured = Boolean(analystUsername && analystPassword);
+  const isAnalyst =
+    hasAnalystCredentialsConfigured &&
+    safeEqual(suppliedUsername, analystUsername as string) &&
+    safeEqual(suppliedPassword, analystPassword as string);
+  const hasAdminCredentialsConfigured = Boolean(adminUsername && adminPassword);
+  const isAdmin =
+    hasAdminCredentialsConfigured &&
+    safeEqual(suppliedUsername, adminUsername as string) &&
+    safeEqual(suppliedPassword, adminPassword as string);
+
+  const role: DashboardRole = isAdmin ? "admin" : isAnalyst ? "analyst" : isViewer ? "viewer" : "none";
+  if (role === "none") {
     return unauthorized();
   }
 
-  return NextResponse.next();
+  const requiresAdmin = request.nextUrl.pathname.startsWith("/api/export/");
+  const requiresAnalystOrAdmin = request.nextUrl.pathname.startsWith("/api/audit/presets");
+  if (requiresAdmin && hasAdminCredentialsConfigured && role !== "admin") {
+    return unauthorized();
+  }
+  if (requiresAnalystOrAdmin && (request.method === "POST" || request.method === "DELETE")) {
+    if (!(role === "admin" || role === "analyst")) {
+      return unauthorized();
+    }
+  }
+
+  const forwardedHeaders = new Headers(request.headers);
+  forwardedHeaders.set("x-dashboard-role", role);
+  return NextResponse.next({
+    request: {
+      headers: forwardedHeaders
+    }
+  });
 }
 
 export const config = {

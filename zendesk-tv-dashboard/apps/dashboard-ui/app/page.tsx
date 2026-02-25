@@ -2,6 +2,14 @@ import type { ReactElement } from "react";
 import { Dashboard } from "../components/dashboard";
 import { getInitialSnapshot, parseRefreshSeconds } from "../lib/snapshot";
 
+function parseSplashDelayMs(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 7000;
+  }
+  return Math.max(0, Math.min(8000, Math.round(parsed)));
+}
+
 function parseBooleanFlag(value: string | undefined, defaultValue = true): boolean {
   if (!value) {
     return defaultValue;
@@ -18,6 +26,10 @@ function parseBooleanFlag(value: string | undefined, defaultValue = true): boole
 }
 
 export default async function HomePage(): Promise<ReactElement> {
+  const splashDelayMs = parseSplashDelayMs(process.env.DASHBOARD_SPLASH_MIN_MS);
+  if (splashDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, splashDelayMs));
+  }
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
   const refreshSeconds = parseRefreshSeconds(process.env.DASHBOARD_REFRESH_SECONDS);
   const widgetToggles = {

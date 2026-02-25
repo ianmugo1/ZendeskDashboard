@@ -30,6 +30,8 @@ interface BuildSnapshotParams {
   maxSolvedAuditTickets: number;
   maxAgentScan: number;
   pollIntervalSeconds: number;
+  includeHeavyData: boolean;
+  previousSnapshot: ZendeskSnapshot | null;
   timeZone: string;
   alertThresholds: AlertThresholds;
   slaTargets: SlaTargets;
@@ -608,6 +610,8 @@ export async function buildZendeskSnapshot({
   maxSolvedAuditTickets,
   maxAgentScan,
   pollIntervalSeconds,
+  includeHeavyData,
+  previousSnapshot,
   timeZone,
   alertThresholds,
   slaTargets,
@@ -625,6 +629,87 @@ export async function buildZendeskSnapshot({
   const lastSevenDaysStart = toZendeskDate(lastSevenDaysStartDate);
   const lastThirtyDaysStart = toZendeskDate(lastThirtyDaysStartDate);
   const solvedTicketScanLimit = Math.max(maxTicketScan, maxSolvedAuditTickets);
+
+  if (!includeHeavyData && previousSnapshot) {
+    const [unsolvedCount, dailyTodayCount, dailyYesterdayCount, dailyLast7DaysCount, solvedLast7DaysCount, unassignedResponse, attentionResponse] =
+      await Promise.all([
+        client.searchCount("type:ticket -status:solved -status:closed"),
+        client.searchCount(`type:ticket created>=${today}`),
+        client.searchCount(`type:ticket created>=${yesterday} created<${today}`),
+        client.searchCount(`type:ticket created>=${lastSevenDaysStart}`),
+        client.searchCount(`type:ticket solved>=${lastSevenDaysStart}`),
+        client.searchTickets("type:ticket assignee:none -status:solved -status:closed", {
+          perPage: 10,
+          sortBy: "created_at",
+          sortOrder: "asc"
+        }),
+        client.searchTickets("type:ticket status<pending priority>normal", {
+          perPage: 15,
+          sortBy: "created_at",
+          sortOrder: "asc"
+        })
+      ]);
+
+    const alerts = buildAlerts({
+      unsolvedCount,
+      attentionCount: attentionResponse.count ?? attentionResponse.results.length,
+      unassignedCount: unassignedResponse.count ?? unassignedResponse.results.length,
+      thresholds: alertThresholds
+    });
+
+    const snapshot: ZendeskSnapshot = {
+      unsolved_count: unsolvedCount,
+      daily_tickets: {
+        today: dailyTodayCount,
+        yesterday: dailyYesterdayCount,
+        last_7_days: dailyLast7DaysCount
+      },
+      sla_health_7d: previousSnapshot.sla_health_7d,
+      backlog_aging: previousSnapshot.backlog_aging,
+      unassigned_tickets: unassignedResponse.results.slice(0, 10).map((ticket) => mapSnapshotTicket(ticket, now)),
+      top_solvers: previousSnapshot.top_solvers,
+      agent_audit: previousSnapshot.agent_audit,
+      all_agents: previousSnapshot.all_agents,
+      agent_performance_7d: previousSnapshot.agent_performance_7d,
+      solved_tickets_7d: previousSnapshot.solved_tickets_7d,
+      reopened_tickets_30d: previousSnapshot.reopened_tickets_30d,
+      assignment_lag: previousSnapshot.assignment_lag,
+      group_workload: previousSnapshot.group_workload,
+      high_priority_risk_tickets: previousSnapshot.high_priority_risk_tickets,
+      trends_30d: previousSnapshot.trends_30d,
+      attention_tickets: attentionResponse.results.slice(0, 15).map((ticket) => mapAttentionTicket(ticket, now)),
+      tickets_by_tag: previousSnapshot.tickets_by_tag,
+      daily_summary: {
+        date: today,
+        generated_at: now.toISOString(),
+        unsolved_count: unsolvedCount,
+        created_today: dailyTodayCount,
+        solved_count_7d: solvedLast7DaysCount,
+        attention_count: attentionResponse.results.length,
+        sla_within_target_pct: previousSnapshot.sla_health_7d.combined_within_target_pct,
+        active_alert_count: alerts.active_count
+      },
+      alerts,
+      snapshot_mode: "light",
+      core_generated_at: now.toISOString(),
+      heavy_generated_at: previousSnapshot.heavy_generated_at ?? previousSnapshot.generated_at,
+      generated_at: now.toISOString(),
+      poll_interval_seconds: pollIntervalSeconds,
+      window_timezone: timeZone
+    };
+
+    logger.debug(
+      {
+        unsolved_count: snapshot.unsolved_count,
+        unassigned_count: snapshot.unassigned_tickets.length,
+        attention_count: snapshot.attention_tickets.length,
+        active_alert_count: snapshot.alerts.active_count
+      },
+      "Built lightweight Zendesk snapshot payload"
+    );
+
+    return snapshot;
+  }
 
   const [
     unsolvedCount,
@@ -850,6 +935,9 @@ export async function buildZendeskSnapshot({
       active_alert_count: alerts.active_count
     },
     alerts,
+    snapshot_mode: "heavy",
+    core_generated_at: now.toISOString(),
+    heavy_generated_at: now.toISOString(),
     generated_at: now.toISOString(),
     poll_interval_seconds: pollIntervalSeconds,
     window_timezone: timeZone

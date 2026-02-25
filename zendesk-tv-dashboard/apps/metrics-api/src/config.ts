@@ -9,10 +9,14 @@ export interface ApiConfig {
   cacheBackend: CacheBackend;
   redisUrl: string;
   snapshotKey: string;
+  refreshRequestFilePath: string;
   snapshotFilePath: string;
   snapshotStaleAfterSeconds: number;
   screenshotFilePath: string;
   screenshotAccessToken: string | null;
+  workerStatusFilePath: string;
+  corsOrigins: string[];
+  apiToken: string | null;
 }
 
 function parseInteger(value: string | undefined, fallback: number): number {
@@ -28,6 +32,16 @@ function parseCacheBackend(rawValue: string | undefined): CacheBackend {
     return "file";
   }
   return "redis";
+}
+
+function parseList(rawValue: string | undefined): string[] {
+  if (!rawValue) {
+    return [];
+  }
+  return rawValue
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function findWorkspaceRoot(startDir: string): string {
@@ -71,9 +85,13 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     cacheBackend: parseCacheBackend(env.CACHE_BACKEND),
     redisUrl: env.REDIS_URL ?? "redis://localhost:6379",
     snapshotKey: env.SNAPSHOT_KEY ?? "zendesk:snapshot",
+    refreshRequestFilePath: resolvePathForReadWrite(env.REFRESH_REQUEST_FILE_PATH ?? "./data/refresh-request.json"),
     snapshotFilePath: resolvePathForReadWrite(env.SNAPSHOT_FILE_PATH ?? "./data/zendesk-snapshot.json"),
     snapshotStaleAfterSeconds,
     screenshotFilePath: resolvePathForReadWrite(env.SCREENSHOT_FILE_PATH ?? "./data/latest-dashboard.png"),
-    screenshotAccessToken: env.SCREENSHOT_ACCESS_TOKEN?.trim() || null
+    screenshotAccessToken: env.SCREENSHOT_ACCESS_TOKEN?.trim() || null,
+    workerStatusFilePath: resolvePathForReadWrite(env.WORKER_STATUS_FILE_PATH ?? "./data/worker-status.json"),
+    corsOrigins: parseList(env.METRICS_CORS_ORIGINS),
+    apiToken: env.METRICS_API_TOKEN?.trim() || null
   };
 }

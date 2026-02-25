@@ -4,11 +4,12 @@ import { getMetricsApiHeaders } from "../../../lib/metrics-auth";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export async function GET(): Promise<NextResponse> {
+export async function POST(): Promise<NextResponse> {
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
 
   try {
-    const response = await fetch(`${apiBaseUrl}/api/metrics/snapshot`, {
+    const response = await fetch(`${apiBaseUrl}/api/metrics/refresh`, {
+      method: "POST",
       cache: "no-store",
       headers: getMetricsApiHeaders()
     });
