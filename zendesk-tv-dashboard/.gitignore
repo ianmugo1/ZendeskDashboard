@@ -5,6 +5,7 @@ coverage
 .turbo
 .DS_Store
 .env
+.env.production
 .env.local
 npm-debug.log*
 yarn-debug.log*

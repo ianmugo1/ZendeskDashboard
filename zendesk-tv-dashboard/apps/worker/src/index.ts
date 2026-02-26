@@ -10,6 +10,7 @@ import { logger } from "./logger.js";
 import { buildZendeskSnapshot } from "./snapshot-builder.js";
 import { validateSnapshotOrThrow } from "./snapshot-schema.js";
 import { createTeamsNotifier } from "./teams-notifier.js";
+import { createSupabaseRecorder } from "./supabase-recorder.js";
 
 loadEnvFiles();
 
@@ -17,6 +18,7 @@ const config = loadWorkerConfig();
 const redisClient = config.cacheBackend === "redis" ? createClient({ url: config.redisUrl }) : null;
 const zendeskClient = ZendeskClient.fromEnv();
 const teamsNotifier = createTeamsNotifier(config.teamsNotify, logger);
+const supabaseRecorder = createSupabaseRecorder(logger);
 
 let pollInFlight = false;
 let previousSnapshot: ZendeskSnapshot | null = null;
@@ -29,6 +31,8 @@ let lastRateLimitLimit: number | null = null;
 let lastRateLimitResetSeconds: number | null = null;
 let lastRefreshRequestId: string | null = null;
 let refreshMonitor: NodeJS.Timeout | null = null;
+let lastPollStartedAtMs: number | null = null;
+let lastPollFinishedAtMs: number | null = null;
 
 function snapshotFingerprint(snapshot: ZendeskSnapshot): string {
   const normalized: ZendeskSnapshot = {
@@ -45,6 +49,12 @@ function snapshotFingerprint(snapshot: ZendeskSnapshot): string {
 
 async function persistWorkerStatus(lastSuccessfulPollAt: string | null): Promise<void> {
   const statusPath = path.resolve(path.dirname(config.snapshotFilePath), "worker-status.json");
+  const nowMs = Date.now();
+  const nextPollAtIso = new Date((lastPollStartedAtMs ?? nowMs) + config.pollIntervalSeconds * 1000).toISOString();
+  const nextHeavyRefreshAtIso =
+    lastHeavyRefreshAtMs > 0
+      ? new Date(lastHeavyRefreshAtMs + config.heavyRefreshIntervalSeconds * 1000).toISOString()
+      : null;
   await fs.mkdir(path.dirname(statusPath), { recursive: true });
   await fs.writeFile(
     statusPath,
@@ -52,9 +62,14 @@ async function persistWorkerStatus(lastSuccessfulPollAt: string | null): Promise
       {
         poll_interval_seconds: config.pollIntervalSeconds,
         heavy_refresh_interval_seconds: config.heavyRefreshIntervalSeconds,
+        directory_cache_ttl_seconds: config.directoryCacheTtlSeconds,
         consecutive_failures: consecutiveFailures,
         last_error: lastErrorMessage,
         last_successful_poll_at: lastSuccessfulPollAt,
+        last_poll_started_at: lastPollStartedAtMs ? new Date(lastPollStartedAtMs).toISOString() : null,
+        last_poll_finished_at: lastPollFinishedAtMs ? new Date(lastPollFinishedAtMs).toISOString() : null,
+        next_scheduled_poll_at: nextPollAtIso,
+        next_scheduled_heavy_refresh_at: nextHeavyRefreshAtIso,
         rate_limit_remaining: lastRateLimitRemaining,
         rate_limit_limit: lastRateLimitLimit,
         rate_limit_reset_seconds: lastRateLimitResetSeconds
@@ -156,6 +171,7 @@ async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}):
 
   pollInFlight = true;
   const startedAt = Date.now();
+  lastPollStartedAtMs = startedAt;
   const lockToken = randomUUID();
   let lockAcquired = false;
 
@@ -233,6 +249,7 @@ async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}):
       alertThresholds: config.alertThresholds,
       slaTargets: config.slaTargets,
       highPriorityStaleHours: config.highPriorityStaleHours,
+      directoryCacheTtlSeconds: config.directoryCacheTtlSeconds,
       logger
     });
 
@@ -258,6 +275,26 @@ async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}):
       await teamsNotifier.maybeNotify(snapshot);
     } catch (error) {
       logger.error({ err: error }, "Failed to post Teams notification");
+    }
+    if (supabaseRecorder.enabled) {
+      try {
+        await supabaseRecorder.recordSnapshot(snapshot);
+        await supabaseRecorder.recordAlertEvents(snapshot);
+        await supabaseRecorder.recordWorkerRun({
+          startedAt: new Date(startedAt).toISOString(),
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt,
+          success: true,
+          errorMessage: null,
+          snapshotMode: includeHeavyData ? "heavy" : "light",
+          pollReason: options.reason ?? "scheduled",
+          rateLimitRemaining: lastRateLimitRemaining,
+          rateLimitLimit: lastRateLimitLimit,
+          rateLimitResetSeconds: lastRateLimitResetSeconds
+        });
+      } catch (error) {
+        logger.warn({ err: error }, "Failed to write worker/snapshot records to Supabase.");
+      }
     }
 
     logger.info(
@@ -286,6 +323,24 @@ async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}):
     consecutiveFailures += 1;
     lastErrorMessage = error instanceof Error ? error.message : String(error);
     await persistWorkerStatus(previousSnapshot?.generated_at ?? null);
+    if (supabaseRecorder.enabled) {
+      try {
+        await supabaseRecorder.recordWorkerRun({
+          startedAt: new Date(startedAt).toISOString(),
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt,
+          success: false,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          snapshotMode: null,
+          pollReason: options.reason ?? "scheduled",
+          rateLimitRemaining: lastRateLimitRemaining,
+          rateLimitLimit: lastRateLimitLimit,
+          rateLimitResetSeconds: lastRateLimitResetSeconds
+        });
+      } catch (supabaseError) {
+        logger.warn({ err: supabaseError }, "Failed to write failed worker run to Supabase.");
+      }
+    }
     logger.error(
       {
         err: error,
@@ -302,6 +357,7 @@ async function runPoll(options: { forceHeavy?: boolean; reason?: string } = {}):
       }
     }
     pollInFlight = false;
+    lastPollFinishedAtMs = Date.now();
   }
 }
 
@@ -341,9 +397,13 @@ async function bootstrap(): Promise<void> {
       alert_thresholds: config.alertThresholds,
       sla_targets: config.slaTargets,
       high_priority_stale_hours: config.highPriorityStaleHours,
+      directory_cache_ttl_seconds: config.directoryCacheTtlSeconds,
       teams_notifications_enabled: config.teamsNotify.enabled,
       teams_notify_interval_seconds: config.teamsNotify.notifyIntervalSeconds,
+      teams_notify_on_alert_change_only: config.teamsNotify.notifyOnAlertChangeOnly,
+      teams_notify_max_silence_seconds: config.teamsNotify.notifyMaxSilenceSeconds,
       screenshot_capture_enabled: Boolean(config.teamsNotify.screenshotCaptureUrl),
+      supabase_history_enabled: supabaseRecorder.enabled,
       max_ticket_scan: config.maxTicketScan,
       max_solved_audit_tickets: config.maxSolvedAuditTickets,
       max_agent_scan: config.maxAgentScan,

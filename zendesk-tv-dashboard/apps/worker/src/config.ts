@@ -35,6 +35,8 @@ export interface TeamsNotifyConfig {
   screenshotBasicAuthUsername: string | null;
   screenshotBasicAuthPassword: string | null;
   notifyIntervalSeconds: number;
+  notifyOnAlertChangeOnly: boolean;
+  notifyMaxSilenceSeconds: number;
 }
 
 export interface WorkerConfig {
@@ -55,6 +57,7 @@ export interface WorkerConfig {
   alertThresholds: AlertThresholds;
   slaTargets: SlaTargets;
   highPriorityStaleHours: number;
+  directoryCacheTtlSeconds: number;
   teamsNotify: TeamsNotifyConfig;
   dashboardConfig: DashboardConfigFile;
 }
@@ -190,6 +193,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     resolutionHours: Math.max(1, parseInteger(env.SLA_RESOLUTION_TARGET_HOURS, 72))
   };
   const highPriorityStaleHours = Math.max(1, parseInteger(env.HIGH_PRIORITY_STALE_HOURS, 8));
+  const directoryCacheTtlSeconds = Math.max(300, parseInteger(env.DIRECTORY_CACHE_TTL_SECONDS, 21600));
   const teamsNotifyEnabled = parseBoolean(env.TEAMS_NOTIFICATIONS_ENABLED, Boolean(env.TEAMS_WEBHOOK_URL));
   const screenshotFilePath = resolvePathForReadWrite(env.SCREENSHOT_FILE_PATH ?? "./data/latest-dashboard.png");
   const metricsPublicBaseUrl = env.METRICS_PUBLIC_BASE_URL?.trim() || null;
@@ -216,7 +220,9 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     screenshotTimeoutMs: Math.max(5000, parseInteger(env.SCREENSHOT_TIMEOUT_MS, 45000)),
     screenshotBasicAuthUsername: env.SCREENSHOT_BASIC_AUTH_USERNAME?.trim() || null,
     screenshotBasicAuthPassword: env.SCREENSHOT_BASIC_AUTH_PASSWORD?.trim() || null,
-    notifyIntervalSeconds: Math.max(60, parseInteger(env.TEAMS_NOTIFY_INTERVAL_SECONDS, 3600))
+    notifyIntervalSeconds: Math.max(60, parseInteger(env.TEAMS_NOTIFY_INTERVAL_SECONDS, 3600)),
+    notifyOnAlertChangeOnly: parseBoolean(env.TEAMS_NOTIFY_ON_ALERT_CHANGE_ONLY, true),
+    notifyMaxSilenceSeconds: Math.max(300, parseInteger(env.TEAMS_NOTIFY_MAX_SILENCE_SECONDS, 43200))
   };
   const configPath = env.CONFIG_FILE_PATH ?? "./config/dashboard.config.json";
   const envTags = parseTagListFromEnv(env.TICKETS_BY_TAG_LIST);
@@ -240,6 +246,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
     alertThresholds,
     slaTargets,
     highPriorityStaleHours,
+    directoryCacheTtlSeconds,
     teamsNotify,
     dashboardConfig
   };

@@ -17,6 +17,12 @@ export interface ApiConfig {
   workerStatusFilePath: string;
   corsOrigins: string[];
   apiToken: string | null;
+  requestMetricsWindowSize: number;
+  supabaseHistoryEnabled: boolean;
+  supabaseUrl: string | null;
+  supabaseServiceRoleKey: string | null;
+  supabaseSnapshotsTable: string;
+  supabaseWorkerRunsTable: string;
 }
 
 function parseInteger(value: string | undefined, fallback: number): number {
@@ -42,6 +48,20 @@ function parseList(rawValue: string | undefined): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (!value) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function findWorkspaceRoot(startDir: string): string {
@@ -78,6 +98,10 @@ function resolvePathForReadWrite(targetPath: string): string {
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   const snapshotStaleAfterSeconds = Math.max(30, parseInteger(env.SNAPSHOT_STALE_AFTER_SECONDS, 180));
+  const requestMetricsWindowSize = Math.max(20, parseInteger(env.METRICS_REQUEST_METRICS_WINDOW_SIZE, 300));
+  const supabaseUrl = env.SUPABASE_URL?.trim() || null;
+  const supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY?.trim() || null;
+  const supabaseHistoryEnabled = parseBoolean(env.SUPABASE_HISTORY_ENABLED, parseBoolean(env.SUPABASE_ENABLED, false));
 
   return {
     host: env.METRICS_API_HOST ?? "0.0.0.0",
@@ -92,6 +116,12 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     screenshotAccessToken: env.SCREENSHOT_ACCESS_TOKEN?.trim() || null,
     workerStatusFilePath: resolvePathForReadWrite(env.WORKER_STATUS_FILE_PATH ?? "./data/worker-status.json"),
     corsOrigins: parseList(env.METRICS_CORS_ORIGINS),
-    apiToken: env.METRICS_API_TOKEN?.trim() || null
+    apiToken: env.METRICS_API_TOKEN?.trim() || null,
+    requestMetricsWindowSize,
+    supabaseHistoryEnabled,
+    supabaseUrl,
+    supabaseServiceRoleKey,
+    supabaseSnapshotsTable: env.SUPABASE_TABLE_SNAPSHOTS?.trim() || "snapshots",
+    supabaseWorkerRunsTable: env.SUPABASE_TABLE_WORKER_RUNS?.trim() || "worker_runs"
   };
 }

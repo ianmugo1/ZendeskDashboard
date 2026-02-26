@@ -67,6 +67,8 @@ body {
 }
 
 .splash-screen {
+  position: relative;
+  overflow: hidden;
   min-height: 100dvh;
   display: flex;
   align-items: center;
@@ -74,7 +76,39 @@ body {
   padding: 1rem;
 }
 
+.splash-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.splash-bg-slide {
+  position: absolute;
+  inset: 0;
+  background-image: var(--splash-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transform: scale(1.04);
+  animation: splash-bg-cycle 16s ease-in-out infinite;
+  animation-delay: var(--splash-delay);
+}
+
+.splash-tint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(140deg, rgba(126, 212, 255, 0.2) 0%, rgba(67, 214, 140, 0.18) 48%, rgba(8, 22, 35, 0.72) 100%),
+    radial-gradient(circle at 12% 8%, rgba(109, 227, 255, 0.22), transparent 42%),
+    radial-gradient(circle at 85% 22%, rgba(121, 245, 191, 0.2), transparent 44%),
+    linear-gradient(180deg, rgba(4, 11, 18, 0.5), rgba(3, 9, 15, 0.7));
+}
+
 .splash-card {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -85,7 +119,9 @@ body {
 .splash-logo {
   width: clamp(240px, 56vw, 560px);
   height: auto;
-  animation: splash-pulse 1.2s ease-in-out infinite alternate;
+  animation:
+    splash-pulse 1.2s ease-in-out infinite alternate,
+    splash-logo-cycle 16s ease-in-out infinite;
 }
 
 .splash-subtitle {
@@ -105,12 +141,21 @@ body {
   animation: splash-spin 0.9s linear infinite;
 }
 
+.splash-loader-wrap {
+  opacity: 0;
+  animation: splash-loader-appear 0s linear forwards;
+  animation-delay: 700ms;
+}
+
 .splash-progress {
   width: min(380px, 78vw);
   height: 0.38rem;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(158, 223, 255, 0.18);
+  opacity: 0;
+  animation: splash-loader-appear 0s linear forwards;
+  animation-delay: 700ms;
 }
 
 .splash-progress-fill {
@@ -120,6 +165,23 @@ body {
   border-radius: 999px;
   background: linear-gradient(90deg, rgba(80, 208, 255, 0.9) 0%, rgba(67, 214, 140, 0.9) 100%);
   animation: splash-progress 1.5s ease-in-out infinite;
+}
+
+.splash-credit {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 2;
+  margin: 0;
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(220, 245, 255, 0.72);
+  border: 1px solid rgba(164, 224, 249, 0.28);
+  border-radius: 999px;
+  padding: 0.16rem 0.5rem;
+  background: rgba(5, 16, 26, 0.28);
+  backdrop-filter: blur(4px);
 }
 
 .status-dot {
@@ -506,7 +568,97 @@ body {
   }
 }
 
+@keyframes splash-bg-cycle {
+  0% {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+  8% {
+    opacity: 1;
+  }
+  23% {
+    opacity: 1;
+    transform: scale(1.02);
+  }
+  31% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes splash-logo-cycle {
+  0% {
+    opacity: 0.78;
+  }
+  10% {
+    opacity: 1;
+  }
+  24% {
+    opacity: 1;
+  }
+  31% {
+    opacity: 0.84;
+  }
+  100% {
+    opacity: 0.84;
+  }
+}
+
+@keyframes splash-loader-appear {
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-bg-slide {
+    animation: none;
+    opacity: 0;
+    transform: none;
+  }
+
+  .splash-bg-slide:first-child {
+    opacity: 1;
+  }
+
+  .splash-logo,
+  .splash-loader,
+  .splash-progress-fill {
+    animation: none;
+  }
+
+  .splash-loader-wrap,
+  .splash-progress {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 @media (max-width: 768px) {
+  .metric-surface:hover {
+    transform: none;
+  }
+
+  .nav-link {
+    width: 100%;
+    min-height: 2.2rem;
+    font-size: 0.72rem;
+  }
+
+  .trend-chart-svg {
+    max-height: 180px;
+  }
+
+  .table-head th,
+  .table-row td {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
   body {
     background-size:
       38px 38px,

@@ -1,0 +1,14 @@
+node_modules
+.next
+dist
+.git
+.github
+.npm-cache
+coverage
+.env
+.env.local
+.env.production
+data/zendesk-snapshot.json
+data/worker-status.json
+data/refresh-request.json
+*.log

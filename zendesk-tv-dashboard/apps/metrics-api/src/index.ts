@@ -22,6 +22,96 @@ const zendeskClient = (() => {
   }
 })();
 const app = express();
+const recentRequestDurationsMs: number[] = [];
+let totalRequestCount = 0;
+let totalErrorCount = 0;
+
+interface SupabaseHistoryDailyRow {
+  generated_at: string;
+  unsolved_count: number;
+  attention_count: number;
+  active_alert_count: number;
+  snapshot_mode: string | null;
+}
+
+interface SupabaseWorkerRunRow {
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  success: boolean;
+  error_message: string | null;
+  snapshot_mode: string | null;
+  poll_reason: string;
+  rate_limit_remaining: number | null;
+}
+
+function recordRequestDuration(durationMs: number, statusCode: number): void {
+  recentRequestDurationsMs.push(durationMs);
+  if (recentRequestDurationsMs.length > config.requestMetricsWindowSize) {
+    recentRequestDurationsMs.shift();
+  }
+  totalRequestCount += 1;
+  if (statusCode >= 500) {
+    totalErrorCount += 1;
+  }
+}
+
+function percentile(values: number[], pct: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((pct / 100) * sorted.length) - 1));
+  return sorted[index];
+}
+
+function getRequestMetricsSummary(): {
+  total_requests: number;
+  total_server_errors: number;
+  window_size: number;
+  avg_ms: number;
+  p95_ms: number;
+  max_ms: number;
+} {
+  const count = recentRequestDurationsMs.length;
+  const sum = recentRequestDurationsMs.reduce((acc, value) => acc + value, 0);
+  return {
+    total_requests: totalRequestCount,
+    total_server_errors: totalErrorCount,
+    window_size: count,
+    avg_ms: count > 0 ? Number((sum / count).toFixed(1)) : 0,
+    p95_ms: Number(percentile(recentRequestDurationsMs, 95).toFixed(1)),
+    max_ms: count > 0 ? Number(Math.max(...recentRequestDurationsMs).toFixed(1)) : 0
+  };
+}
+
+function isSupabaseHistoryConfigured(): boolean {
+  return Boolean(config.supabaseHistoryEnabled && config.supabaseUrl && config.supabaseServiceRoleKey);
+}
+
+async function querySupabaseTable<T>(table: string, query: string): Promise<T[]> {
+  if (!isSupabaseHistoryConfigured()) {
+    throw new HttpError(503, "Supabase history is not configured.");
+  }
+
+  const url = `${config.supabaseUrl}/rest/v1/${encodeURIComponent(table)}?${query}`;
+  const response = await fetch(url, {
+    headers: {
+      apikey: config.supabaseServiceRoleKey as string,
+      Authorization: `Bearer ${config.supabaseServiceRoleKey as string}`
+    }
+  });
+
+  const payload = (await response.json().catch(() => [])) as unknown;
+  if (!response.ok) {
+    throw new HttpError(502, "Failed to query Supabase history.", payload);
+  }
+  if (!Array.isArray(payload)) {
+    throw new HttpError(502, "Unexpected Supabase response shape.");
+  }
+
+  return payload as T[];
+}
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) {
@@ -408,12 +498,14 @@ app.use("/api/metrics", (req, _res, next) => {
 app.use((req, res, next) => {
   const startedAt = Date.now();
   res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    recordRequestDuration(durationMs, res.statusCode);
     logger.info(
       {
         method: req.method,
         path: req.path,
         status_code: res.statusCode,
-        duration_ms: Date.now() - startedAt
+        duration_ms: durationMs
       },
       "HTTP request completed"
     );
@@ -429,6 +521,7 @@ app.get(
       status: "ok",
       service: "metrics-api",
       cache,
+      http_metrics: getRequestMetricsSummary(),
       timestamp: new Date().toISOString()
     });
   })
@@ -463,6 +556,73 @@ app.get(
     const parsed = JSON.parse(raw) as unknown;
     res.set("Cache-Control", "no-store");
     res.json(parsed);
+  })
+);
+
+app.get(
+  "/api/metrics/history/daily",
+  asyncRoute(async (req, res) => {
+    const limit = parsePositiveInteger(typeof req.query.limit === "string" ? req.query.limit : undefined, 30, 120);
+    const rows = await querySupabaseTable<SupabaseHistoryDailyRow>(
+      config.supabaseSnapshotsTable,
+      `select=generated_at,unsolved_count,attention_count,active_alert_count,snapshot_mode&order=generated_at.desc&limit=${limit}`
+    );
+
+    const items = rows
+      .slice()
+      .reverse()
+      .map((row) => ({
+        generated_at: row.generated_at,
+        unsolved_count: row.unsolved_count,
+        attention_count: row.attention_count,
+        active_alert_count: row.active_alert_count,
+        snapshot_mode: row.snapshot_mode ?? "unknown"
+      }));
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      source: "supabase",
+      table: config.supabaseSnapshotsTable,
+      item_count: items.length,
+      items
+    });
+  })
+);
+
+app.get(
+  "/api/metrics/history/worker-runs",
+  asyncRoute(async (req, res) => {
+    const limit = parsePositiveInteger(typeof req.query.limit === "string" ? req.query.limit : undefined, 30, 120);
+    const rows = await querySupabaseTable<SupabaseWorkerRunRow>(
+      config.supabaseWorkerRunsTable,
+      `select=started_at,finished_at,duration_ms,success,error_message,snapshot_mode,poll_reason,rate_limit_remaining&order=started_at.desc&limit=${limit}`
+    );
+
+    const items = rows
+      .slice()
+      .reverse()
+      .map((row) => ({
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        duration_ms: row.duration_ms,
+        success: row.success,
+        error_message: row.error_message,
+        snapshot_mode: row.snapshot_mode ?? "unknown",
+        poll_reason: row.poll_reason,
+        rate_limit_remaining: row.rate_limit_remaining
+      }));
+
+    const successful = items.filter((item) => item.success).length;
+    const successRate = items.length === 0 ? 0 : Number(((successful / items.length) * 100).toFixed(1));
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      source: "supabase",
+      table: config.supabaseWorkerRunsTable,
+      item_count: items.length,
+      success_rate_pct: successRate,
+      items
+    });
   })
 );
 
@@ -680,6 +840,11 @@ async function bootstrap(): Promise<void> {
         screenshot_protected: Boolean(config.screenshotAccessToken),
         metrics_api_token_protected: Boolean(config.apiToken),
         cors_origin_count: config.corsOrigins.length,
+        request_metrics_window_size: config.requestMetricsWindowSize,
+        supabase_history_enabled: config.supabaseHistoryEnabled,
+        supabase_history_configured: Boolean(config.supabaseUrl && config.supabaseServiceRoleKey),
+        supabase_snapshots_table: config.supabaseSnapshotsTable,
+        supabase_worker_runs_table: config.supabaseWorkerRunsTable,
         worker_status_file_path: config.workerStatusFilePath,
         refresh_request_file_path: config.refreshRequestFilePath
       },

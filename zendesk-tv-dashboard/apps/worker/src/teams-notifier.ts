@@ -218,6 +218,7 @@ class NoopTeamsNotifier implements TeamsNotifier {
 
 class WebhookTeamsNotifier implements TeamsNotifier {
   private lastSentAtMs = 0;
+  private lastAlertSignature: string | null = null;
   private readonly warnedMissingConfig: { webhook: boolean; dashboard: boolean } = {
     webhook: false,
     dashboard: false
@@ -248,6 +249,12 @@ class WebhookTeamsNotifier implements TeamsNotifier {
 
     const nowMs = Date.now();
     if (nowMs - this.lastSentAtMs < this.config.notifyIntervalSeconds * 1000) {
+      return;
+    }
+    const currentAlertSignature = JSON.stringify(snapshot.alerts);
+    const alertStateChanged = this.lastAlertSignature !== currentAlertSignature;
+    const silenceExceeded = nowMs - this.lastSentAtMs >= this.config.notifyMaxSilenceSeconds * 1000;
+    if (this.config.notifyOnAlertChangeOnly && this.lastSentAtMs > 0 && !alertStateChanged && !silenceExceeded) {
       return;
     }
 
@@ -284,10 +291,12 @@ class WebhookTeamsNotifier implements TeamsNotifier {
     }
 
     this.lastSentAtMs = nowMs;
+    this.lastAlertSignature = currentAlertSignature;
     this.logger.info(
       {
         generated_at: snapshot.generated_at,
-        image_attached: Boolean(imageUrl)
+        image_attached: Boolean(imageUrl),
+        alert_state_changed: alertStateChanged
       },
       "Posted dashboard update to Teams"
     );

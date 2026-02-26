@@ -36,7 +36,52 @@ interface BuildSnapshotParams {
   alertThresholds: AlertThresholds;
   slaTargets: SlaTargets;
   highPriorityStaleHours: number;
+  directoryCacheTtlSeconds: number;
   logger: Logger;
+}
+
+let cachedAgents: { fetchedAtMs: number; users: ZendeskUser[]; maxScan: number } | null = null;
+const cachedGroupsByKey = new Map<string, { fetchedAtMs: number; groups: ZendeskGroup[] }>();
+
+async function getAgentDirectory(
+  client: ZendeskClient,
+  maxAgentScan: number,
+  cacheTtlSeconds: number
+): Promise<ZendeskUser[]> {
+  const nowMs = Date.now();
+  if (
+    cachedAgents &&
+    cachedAgents.maxScan === maxAgentScan &&
+    nowMs - cachedAgents.fetchedAtMs <= cacheTtlSeconds * 1000
+  ) {
+    return cachedAgents.users;
+  }
+  const users = await client.listAgents(maxAgentScan);
+  cachedAgents = { fetchedAtMs: nowMs, users, maxScan: maxAgentScan };
+  return users;
+}
+
+async function getGroupsDirectory(
+  client: ZendeskClient,
+  dashboardConfig: DashboardConfigFile,
+  cacheTtlSeconds: number
+): Promise<ZendeskGroup[]> {
+  const configKey =
+    dashboardConfig.groupIds.length > 0
+      ? `ids:${dashboardConfig.groupIds.slice().sort((a, b) => a - b).join(",")}`
+      : "all:500";
+  const cached = cachedGroupsByKey.get(configKey);
+  const nowMs = Date.now();
+  if (cached && nowMs - cached.fetchedAtMs <= cacheTtlSeconds * 1000) {
+    return cached.groups;
+  }
+
+  const groups =
+    dashboardConfig.groupIds.length > 0
+      ? await client.getGroupsByIds(dashboardConfig.groupIds).then((groupsMap) => Array.from(groupsMap.values()))
+      : await client.listGroups(500);
+  cachedGroupsByKey.set(configKey, { fetchedAtMs: nowMs, groups });
+  return groups;
 }
 
 interface CalendarDate {
@@ -616,6 +661,7 @@ export async function buildZendeskSnapshot({
   alertThresholds,
   slaTargets,
   highPriorityStaleHours,
+  directoryCacheTtlSeconds,
   logger
 }: BuildSnapshotParams): Promise<ZendeskSnapshot> {
   const now = new Date();
@@ -771,10 +817,8 @@ export async function buildZendeskSnapshot({
       sortBy: "updated_at",
       sortOrder: "desc"
     }),
-    client.listAgents(maxAgentScan),
-    dashboardConfig.groupIds.length > 0
-      ? client.getGroupsByIds(dashboardConfig.groupIds).then((groupsMap) => Array.from(groupsMap.values()))
-      : client.listGroups(500),
+    getAgentDirectory(client, maxAgentScan, directoryCacheTtlSeconds),
+    getGroupsDirectory(client, dashboardConfig, directoryCacheTtlSeconds),
     getTagCounts(client, dashboardConfig.tags)
   ]);
 

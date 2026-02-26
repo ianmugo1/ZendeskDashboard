@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 interface DashboardProps {
   initialSnapshot: ZendeskSnapshot | null;
   refreshSeconds: number;
+  staleWarningSeconds: number;
   widgetToggles: {
     topSolvers: boolean;
     ticketsByTag: boolean;
@@ -15,6 +16,40 @@ interface DashboardProps {
     attention: boolean;
     dailyVolume: boolean;
   };
+}
+
+interface WorkerStatus {
+  poll_interval_seconds: number;
+  heavy_refresh_interval_seconds: number;
+  consecutive_failures: number;
+  last_error: string | null;
+  last_successful_poll_at: string | null;
+  last_poll_started_at?: string | null;
+  last_poll_finished_at?: string | null;
+  next_scheduled_poll_at?: string | null;
+  next_scheduled_heavy_refresh_at?: string | null;
+  rate_limit_remaining: number | null;
+  rate_limit_limit: number | null;
+  rate_limit_reset_seconds: number | null;
+}
+
+interface HistoryDailyItem {
+  generated_at: string;
+  unsolved_count: number;
+  attention_count: number;
+  active_alert_count: number;
+  snapshot_mode: string;
+}
+
+interface HistoryWorkerRunItem {
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  success: boolean;
+  error_message: string | null;
+  snapshot_mode: string;
+  poll_reason: string;
+  rate_limit_remaining: number | null;
 }
 
 interface MetricDefinition {
@@ -76,6 +111,43 @@ function formatAgeMinutes(timestamp: string | undefined): string {
   return `${minutes} min ago`;
 }
 
+function formatAgeShort(timestamp: string | undefined): string {
+  if (!timestamp) {
+    return "n/a";
+  }
+  const ms = Date.parse(timestamp);
+  if (Number.isNaN(ms)) {
+    return "n/a";
+  }
+  const minutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function formatRelativeFuture(timestamp: string | null | undefined): string {
+  if (!timestamp) {
+    return "n/a";
+  }
+  const ms = Date.parse(timestamp);
+  if (Number.isNaN(ms)) {
+    return "n/a";
+  }
+  const deltaMinutes = Math.round((ms - Date.now()) / 60000);
+  if (deltaMinutes <= 0) {
+    return "due now";
+  }
+  if (deltaMinutes < 60) {
+    return `in ${deltaMinutes} min`;
+  }
+  const hours = Math.floor(deltaMinutes / 60);
+  const minutes = deltaMinutes % 60;
+  return minutes > 0 ? `in ${hours}h ${minutes}m` : `in ${hours}h`;
+}
+
 function formatAbsoluteDate(dateString: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) {
@@ -95,6 +167,16 @@ function formatUkDateFromYmd(dateString: string): string {
     return dateString;
   }
   return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function formatClockTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "n/a";
+  }
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes} UTC`;
 }
 
 function getTicketUrl(ticketId: number): string {
@@ -121,8 +203,11 @@ function SummaryTile({
   );
 }
 
-export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: DashboardProps): ReactElement {
+export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds, widgetToggles }: DashboardProps): ReactElement {
   const [snapshot, setSnapshot] = useState<ZendeskSnapshot | null>(initialSnapshot);
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
+  const [historyDaily, setHistoryDaily] = useState<HistoryDailyItem[]>([]);
+  const [historyRuns, setHistoryRuns] = useState<HistoryWorkerRunItem[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [forceRefreshing, setForceRefreshing] = useState(false);
@@ -279,6 +364,38 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
     }
   }, []);
 
+  const fetchWorkerStatus = useCallback(async (): Promise<void> => {
+    try {
+      const response = await fetch("/api/worker-status", { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const payload = (await response.json()) as WorkerStatus;
+      setWorkerStatus(payload);
+    } catch {
+      // Ignore worker-status fetch errors and keep previous state.
+    }
+  }, []);
+
+  const fetchHistory = useCallback(async (): Promise<void> => {
+    try {
+      const [dailyResponse, runsResponse] = await Promise.all([
+        fetch("/api/history/daily?limit=30", { cache: "no-store" }),
+        fetch("/api/history/worker-runs?limit=30", { cache: "no-store" })
+      ]);
+      if (dailyResponse.ok) {
+        const payload = (await dailyResponse.json()) as { items?: HistoryDailyItem[] };
+        setHistoryDaily(Array.isArray(payload.items) ? payload.items : []);
+      }
+      if (runsResponse.ok) {
+        const payload = (await runsResponse.json()) as { items?: HistoryWorkerRunItem[] };
+        setHistoryRuns(Array.isArray(payload.items) ? payload.items : []);
+      }
+    } catch {
+      // history is optional; keep existing UI if unavailable.
+    }
+  }, []);
+
   const forceRefreshAllMetrics = useCallback(async () => {
     if (forceRefreshing) {
       return;
@@ -328,9 +445,15 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
     if (!initialSnapshot) {
       void fetchSnapshot();
     }
-    const interval = setInterval(() => void fetchSnapshot(), effectiveRefreshSeconds * 1000);
+    void fetchWorkerStatus();
+    void fetchHistory();
+    const interval = setInterval(() => {
+      void fetchSnapshot();
+      void fetchWorkerStatus();
+      void fetchHistory();
+    }, effectiveRefreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, [effectiveRefreshSeconds, fetchSnapshot, initialSnapshot]);
+  }, [effectiveRefreshSeconds, fetchHistory, fetchSnapshot, fetchWorkerStatus, initialSnapshot]);
   useEffect(() => {
     if (visibleTrendPoints.length === 0) {
       setHoveredTrendDate(null);
@@ -364,8 +487,40 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
     if (Number.isNaN(generatedAtMs)) {
       return true;
     }
-    return Date.now() - generatedAtMs > effectiveRefreshSeconds * 1000 * 3;
-  }, [effectiveRefreshSeconds, snapshot]);
+    return Date.now() - generatedAtMs > staleWarningSeconds * 1000;
+  }, [snapshot, staleWarningSeconds]);
+  const historyChart = useMemo(() => {
+    const points = historyDaily;
+    const chartWidth = 980;
+    const chartHeight = 180;
+    const left = 20;
+    const right = 16;
+    const top = 12;
+    const bottom = 24;
+    const usableWidth = chartWidth - left - right;
+    const usableHeight = chartHeight - top - bottom;
+    const maxValue = Math.max(1, ...points.map((point) => point.unsolved_count));
+    const mapped = points.map((point, index) => {
+      const ratioX = points.length <= 1 ? 0.5 : index / (points.length - 1);
+      const ratioY = point.unsolved_count / maxValue;
+      return {
+        ...point,
+        x: left + ratioX * usableWidth,
+        y: top + (1 - ratioY) * usableHeight
+      };
+    });
+    const path = mapped.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+    return { chartWidth, chartHeight, left, right, top, bottom, maxValue, points: mapped, path };
+  }, [historyDaily]);
+  const workerRunSummary = useMemo(() => {
+    if (historyRuns.length === 0) {
+      return { successRatePct: 0, avgDurationMs: 0 };
+    }
+    const successCount = historyRuns.filter((run) => run.success).length;
+    const successRatePct = Number(((successCount / historyRuns.length) * 100).toFixed(1));
+    const avgDurationMs = Math.round(historyRuns.reduce((sum, run) => sum + run.duration_ms, 0) / historyRuns.length);
+    return { successRatePct, avgDurationMs };
+  }, [historyRuns]);
 
   if (!snapshot) {
     return (
@@ -406,15 +561,28 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
             </div>
           </div>
           <div className="text-sm md:text-right">
-            <p className="text-slate-300">
-              Last updated: <span className="mono-numbers text-slate-100">{formatAbsoluteDate(snapshot.generated_at)}</span>
-            </p>
-            <p className="text-slate-300">
-              Core: <span className="mono-numbers text-slate-100">{formatAgeMinutes(snapshot.core_generated_at)}</span> | Heavy:{" "}
-              <span className="mono-numbers text-slate-100">{formatAgeMinutes(snapshot.heavy_generated_at)}</span>
-            </p>
-            <p className={stale ? "text-rose-300" : "text-emerald-300"}>
-              {refreshing ? "Refreshing now" : `Refreshes every ${formatRefreshInterval(effectiveRefreshSeconds)}`}
+            <div className="flex flex-wrap gap-2 text-xs md:justify-end">
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200" title={formatAbsoluteDate(snapshot.generated_at)}>
+                Updated <span className="mono-numbers text-slate-100">{formatAgeShort(snapshot.generated_at)}</span>
+              </span>
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                Core <span className="mono-numbers text-slate-100">{formatAgeShort(snapshot.core_generated_at)}</span>
+              </span>
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                Heavy <span className="mono-numbers text-slate-100">{formatAgeShort(snapshot.heavy_generated_at)}</span>
+              </span>
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                Auto <span className="mono-numbers text-slate-100">{formatRefreshInterval(effectiveRefreshSeconds)}</span>
+              </span>
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_poll_at)}</span>
+              </span>
+              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                Heavy Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_heavy_refresh_at)}</span>
+              </span>
+            </div>
+            <p className={`mt-1 ${stale ? "text-rose-300" : "text-emerald-300"}`}>
+              {refreshing ? "Refreshing now" : "Data feed healthy"}
             </p>
             <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
               <a href="/audit" className="nav-link">Agent Audit Page</a>
@@ -428,6 +596,12 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
           </div>
         </header>
 
+        {stale ? (
+          <section className="metric-surface alert-strip px-4 py-3 text-sm text-rose-100">
+            Snapshot is stale ({formatAgeMinutes(snapshot.generated_at)}). Worker may be delayed or Zendesk rate-limited.
+          </section>
+        ) : null}
+
         <section className="grid grid-cols-12 gap-4">
           <SummaryTile label="Unsolved" value={formatCount(snapshot.unsolved_count)} tone="text-[var(--kpi-highlight)]" />
           <SummaryTile label="SLA (7d)" value={formatPercent(snapshot.sla_health_7d.combined_within_target_pct)} tone="text-emerald-300" />
@@ -435,6 +609,114 @@ export function Dashboard({ initialSnapshot, refreshSeconds, widgetToggles }: Da
           <SummaryTile label="Solved (7d)" value={formatCount(snapshot.daily_summary.solved_count_7d)} />
           <SummaryTile label="Backlog >7d" value={formatCount(snapshot.backlog_aging.over_7d)} tone="text-amber-200" />
           <SummaryTile label="Unassigned >2h" value={formatCount(snapshot.assignment_lag.over_2h)} tone="text-amber-200" />
+        </section>
+
+        <section className="grid grid-cols-12 gap-4">
+          <article className="metric-surface col-span-12 p-4">
+            <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Operations Health</h2>
+            <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-200 md:grid-cols-4">
+              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Consecutive Failures</p>
+                <p className="mono-numbers text-base">{formatCount(workerStatus?.consecutive_failures ?? 0)}</p>
+              </div>
+              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Limit Remaining</p>
+                <p className="mono-numbers text-base">
+                  {workerStatus?.rate_limit_remaining ?? "n/a"} / {workerStatus?.rate_limit_limit ?? "n/a"}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Reset</p>
+                <p className="mono-numbers text-base">
+                  {workerStatus?.rate_limit_reset_seconds !== null && workerStatus?.rate_limit_reset_seconds !== undefined
+                    ? `${workerStatus.rate_limit_reset_seconds}s`
+                    : "n/a"}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Last Error</p>
+                <p className="truncate text-sm text-slate-200">{workerStatus?.last_error ?? "None"}</p>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section className="grid grid-cols-12 gap-4">
+          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-7">
+            <div className="border-b border-slate-400/20 px-4 py-3">
+              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">History (Supabase, Last 30 Runs)</h2>
+            </div>
+            <div className="p-3">
+              {historyChart.points.length > 0 ? (
+                <>
+                  <svg viewBox={`0 0 ${historyChart.chartWidth} ${historyChart.chartHeight}`} className="trend-chart-svg" role="img" aria-label="Unsolved history trend">
+                    {[0, 1, 2, 3].map((line) => {
+                      const y = historyChart.top + ((historyChart.chartHeight - historyChart.top - historyChart.bottom) * line) / 3;
+                      return <line key={`history-grid-${line}`} x1={historyChart.left} y1={y} x2={historyChart.chartWidth - historyChart.right} y2={y} className="trend-grid-line" />;
+                    })}
+                    {historyChart.path ? <path d={historyChart.path} className="trend-line-solved" /> : null}
+                    {historyChart.points.map((point) => (
+                      <circle key={`history-point-${point.generated_at}`} cx={point.x} cy={point.y} r={2.6} className="trend-point-solved" />
+                    ))}
+                  </svg>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+                    <span>Peak unsolved: {formatCount(historyChart.maxValue)}</span>
+                    <span>Latest: {formatCount(historyChart.points[historyChart.points.length - 1]?.unsolved_count ?? 0)}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-slate-300">Supabase history not available yet.</p>
+              )}
+            </div>
+          </article>
+
+          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-5">
+            <div className="border-b border-slate-400/20 px-4 py-3">
+              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Worker Reliability (Recent)</h2>
+            </div>
+            <div className="p-3">
+              <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Success Rate</p>
+                  <p className="mono-numbers text-base text-emerald-300">{formatPercent(workerRunSummary.successRatePct)}</p>
+                </div>
+                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Avg Duration</p>
+                  <p className="mono-numbers text-base text-slate-100">{Math.round(workerRunSummary.avgDurationMs / 1000)}s</p>
+                </div>
+              </div>
+              {historyRuns.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead className="table-head text-left uppercase tracking-[0.12em] text-slate-400">
+                      <tr>
+                        <th className="px-2 py-1.5">Time</th>
+                        <th className="px-2 py-1.5">Mode</th>
+                        <th className="px-2 py-1.5 text-right">Dur</th>
+                        <th className="px-2 py-1.5 text-right">RL</th>
+                        <th className="px-2 py-1.5 text-right">OK</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyRuns.slice(-8).reverse().map((run) => (
+                        <tr key={`${run.started_at}-${run.duration_ms}`} className="table-row border-t border-slate-500/15">
+                          <td className="px-2 py-1.5">{formatClockTime(run.started_at)}</td>
+                          <td className="px-2 py-1.5">{run.snapshot_mode}</td>
+                          <td className="mono-numbers px-2 py-1.5 text-right">{Math.round(run.duration_ms / 1000)}s</td>
+                          <td className="mono-numbers px-2 py-1.5 text-right">{run.rate_limit_remaining ?? "n/a"}</td>
+                          <td className={`px-2 py-1.5 text-right ${run.success ? "text-emerald-300" : "text-rose-300"}`}>
+                            {run.success ? "Yes" : "No"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-300">Worker history not available yet.</p>
+              )}
+            </div>
+          </article>
         </section>
 
         <details className="metric-surface p-4">

@@ -1,13 +1,13 @@
 import type { ReactElement } from "react";
 import { Dashboard } from "../components/dashboard";
-import { getInitialSnapshot, parseRefreshSeconds } from "../lib/snapshot";
+import { getInitialSnapshot, parseRefreshSeconds, parseStaleWarningSeconds } from "../lib/snapshot";
 
 function parseSplashDelayMs(value: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
-    return 7000;
+    return 6000;
   }
-  return Math.max(0, Math.min(8000, Math.round(parsed)));
+  return Math.max(0, Math.min(15000, Math.round(parsed)));
 }
 
 function parseBooleanFlag(value: string | undefined, defaultValue = true): boolean {
@@ -32,6 +32,7 @@ export default async function HomePage(): Promise<ReactElement> {
   }
   const apiBaseUrl = process.env.DASHBOARD_API_BASE_URL ?? "http://localhost:4000";
   const refreshSeconds = parseRefreshSeconds(process.env.DASHBOARD_REFRESH_SECONDS);
+  const staleWarningSeconds = parseStaleWarningSeconds(process.env.DASHBOARD_STALE_WARNING_SECONDS, refreshSeconds);
   const widgetToggles = {
     topSolvers: parseBooleanFlag(process.env.WIDGETS_TOP_SOLVERS, true),
     ticketsByTag: parseBooleanFlag(process.env.WIDGETS_TICKETS_BY_TAG, true),
@@ -41,5 +42,12 @@ export default async function HomePage(): Promise<ReactElement> {
   };
   const initialSnapshot = await getInitialSnapshot(apiBaseUrl);
 
-  return <Dashboard initialSnapshot={initialSnapshot} refreshSeconds={refreshSeconds} widgetToggles={widgetToggles} />;
+  return (
+    <Dashboard
+      initialSnapshot={initialSnapshot}
+      refreshSeconds={refreshSeconds}
+      staleWarningSeconds={staleWarningSeconds}
+      widgetToggles={widgetToggles}
+    />
+  );
 }

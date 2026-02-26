@@ -101,12 +101,74 @@ npm run dev:worker
 npm run dev:dashboard
 ```
 
+## Production deployment (desktop + mobile access)
+
+This repo includes a production Docker stack with HTTPS termination:
+
+- `docker-compose.prod.yml`
+- `docker/dashboard-ui.Dockerfile`
+- `docker/metrics-api.Dockerfile`
+- `docker/worker.Dockerfile`
+- `deploy/Caddyfile`
+- `.env.production.example`
+
+### Deploy steps
+
+1. Copy production env template and set real values/secrets:
+
+```bash
+cp .env.production.example .env.production
+```
+
+2. Set at minimum:
+
+- `DASHBOARD_DOMAIN` (public DNS name)
+- Zendesk credentials (`ZENDESK_*`)
+- dashboard auth credentials (`DASHBOARD_BASIC_AUTH_*`, optionally analyst/admin)
+- `METRICS_API_TOKEN` (required for internal API protection)
+- rotate all `change-me` passwords/tokens before first deploy (deploy script now blocks placeholders)
+
+3. Point your domain DNS A record to the server IP.
+
+4. Start stack:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+```
+
+Or use:
+
+```bash
+./scripts/deploy-prod.sh
+```
+
+5. Open `https://<your-domain>` on desktop or mobile.
+
+### Updating deployment
+
+```bash
+git pull
+docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+```
+
+### Backup data
+
+Create a backup archive of `/app/data` from the running metrics container:
+
+```bash
+./scripts/backup-dashboard-data.sh
+```
+
+This outputs a timestamped archive under `backups/`.
+
 ## API endpoints
 
 - `GET /health` (metrics API): service + cache backend health.
 - `GET /api/metrics/snapshot` (metrics API): current cached dashboard payload.
 - `GET /api/metrics/summary/daily` (metrics API): daily compliance summary slice.
 - `GET /api/metrics/worker-status` (metrics API): worker health, failures, and last successful poll.
+- `GET /api/metrics/history/daily` (metrics API): Supabase-backed historical snapshot series.
+- `GET /api/metrics/history/worker-runs` (metrics API): Supabase-backed worker run reliability series.
 - `GET /api/metrics/audit/solved` (metrics API): server-side paginated solved-ticket audit rows.
 - `POST /api/metrics/refresh` (metrics API): request an immediate heavy refresh from worker.
 - `GET /api/metrics/screenshot/latest` (metrics API): latest PNG screenshot for Teams cards.
@@ -114,6 +176,8 @@ npm run dev:dashboard
 - `GET /api/snapshot` (dashboard UI): proxy to metrics API for browser refresh.
 - `GET /api/export/:dataset` (dashboard UI): proxy CSV download endpoint.
 - `POST /api/refresh` (dashboard UI): proxy refresh trigger endpoint.
+- `GET /api/history/daily` (dashboard UI): proxy history daily endpoint.
+- `GET /api/history/worker-runs` (dashboard UI): proxy worker runs history endpoint.
 - `GET/POST/DELETE /api/audit/presets` (dashboard UI): shared saved filter presets for audit page.
 
 ## Config knobs
@@ -151,11 +215,14 @@ npm run dev:dashboard
   - `SLA_FIRST_RESPONSE_TARGET_HOURS`
   - `SLA_RESOLUTION_TARGET_HOURS`
   - `HIGH_PRIORITY_STALE_HOURS`
+  - `DIRECTORY_CACHE_TTL_SECONDS`
   - `METRICS_PUBLIC_BASE_URL`
   - `DASHBOARD_PUBLIC_URL`
   - `TEAMS_NOTIFICATIONS_ENABLED`
   - `TEAMS_WEBHOOK_URL`
   - `TEAMS_NOTIFY_INTERVAL_SECONDS`
+  - `TEAMS_NOTIFY_ON_ALERT_CHANGE_ONLY`
+  - `TEAMS_NOTIFY_MAX_SILENCE_SECONDS`
   - `SCREENSHOT_CAPTURE_URL`
   - `SCREENSHOT_FILE_PATH`
   - `SCREENSHOT_PUBLIC_URL`
@@ -168,6 +235,8 @@ npm run dev:dashboard
   - `SCREENSHOT_BASIC_AUTH_PASSWORD`
   - `DASHBOARD_BASIC_AUTH_USERNAME`
   - `DASHBOARD_BASIC_AUTH_PASSWORD`
+  - `DASHBOARD_STALE_WARNING_SECONDS`
+  - `METRICS_REQUEST_METRICS_WINDOW_SIZE`
 - `config/dashboard.config.json`:
   - `tags`
   - `groupIds`
@@ -203,3 +272,53 @@ Setup:
 npm run typecheck
 npm run build
 ```
+
+## Supabase Phase 1 (history write-through)
+
+The worker can optionally write historical records to Supabase while keeping Redis/file snapshot reads unchanged.
+
+Set in `.env` or `.env.production`:
+
+- `SUPABASE_ENABLED=true`
+- `SUPABASE_HISTORY_ENABLED=true` (optional override for metrics-api history reads)
+- `SUPABASE_URL=https://<project-ref>.supabase.co`
+- `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
+- `SUPABASE_TABLE_SNAPSHOTS=snapshots`
+- `SUPABASE_TABLE_WORKER_RUNS=worker_runs`
+- `SUPABASE_TABLE_ALERT_EVENTS=alert_events`
+
+Create tables in Supabase SQL editor using:
+
+- `supabase/phase1_schema.sql`
+
+Expected table columns:
+
+- `snapshots`: `generated_at`, `snapshot_mode`, `core_generated_at`, `heavy_generated_at`, `unsolved_count`, `attention_count`, `active_alert_count`, `payload_json`
+- `worker_runs`: `started_at`, `finished_at`, `duration_ms`, `success`, `error_message`, `snapshot_mode`, `poll_reason`, `rate_limit_remaining`, `rate_limit_limit`, `rate_limit_reset_seconds`
+- `alert_events`: `generated_at`, `snapshot_mode`, `metric`, `label`, `current_value`, `threshold`, `active`
+
+## Incident runbook
+
+1. Check container health:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.production ps
+```
+
+2. Check API and worker health:
+
+```bash
+curl -s https://<dashboard-domain>/api/metrics/worker-status
+curl -s https://<dashboard-domain>/api/health
+```
+
+3. Trigger immediate full refresh:
+
+```bash
+curl -X POST https://<dashboard-domain>/api/refresh
+```
+
+4. If snapshot remains stale:
+- check worker logs for rate-limit pressure and failed polls
+- validate Zendesk credentials and subdomain
+- scale poll intervals up temporarily to reduce API pressure

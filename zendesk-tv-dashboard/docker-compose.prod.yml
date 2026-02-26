@@ -1,0 +1,77 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  metrics-api:
+    build:
+      context: .
+      dockerfile: docker/metrics-api.Dockerfile
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "4000"
+    volumes:
+      - dashboard_data:/app/data
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      metrics-api:
+        condition: service_started
+      dashboard-ui:
+        condition: service_started
+    volumes:
+      - dashboard_data:/app/data
+
+  dashboard-ui:
+    build:
+      context: .
+      dockerfile: docker/dashboard-ui.Dockerfile
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    depends_on:
+      metrics-api:
+        condition: service_started
+    expose:
+      - "3000"
+    volumes:
+      - dashboard_data:/app/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      dashboard-ui:
+        condition: service_started
+    env_file:
+      - .env.production
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  dashboard_data:
+  caddy_data:
+  caddy_config:
