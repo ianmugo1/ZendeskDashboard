@@ -9,6 +9,7 @@ interface DashboardProps {
   initialSnapshot: ZendeskSnapshot | null;
   refreshSeconds: number;
   staleWarningSeconds: number;
+  showOperations?: boolean;
   widgetToggles: {
     topSolvers: boolean;
     ticketsByTag: boolean;
@@ -203,7 +204,7 @@ function SummaryTile({
   );
 }
 
-export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds, widgetToggles }: DashboardProps): ReactElement {
+export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds, showOperations = false, widgetToggles }: DashboardProps): ReactElement {
   const [snapshot, setSnapshot] = useState<ZendeskSnapshot | null>(initialSnapshot);
   const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const [historyDaily, setHistoryDaily] = useState<HistoryDailyItem[]>([]);
@@ -445,15 +446,19 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
     if (!initialSnapshot) {
       void fetchSnapshot();
     }
-    void fetchWorkerStatus();
-    void fetchHistory();
-    const interval = setInterval(() => {
-      void fetchSnapshot();
+    if (showOperations) {
       void fetchWorkerStatus();
       void fetchHistory();
+    }
+    const interval = setInterval(() => {
+      void fetchSnapshot();
+      if (showOperations) {
+        void fetchWorkerStatus();
+        void fetchHistory();
+      }
     }, effectiveRefreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, [effectiveRefreshSeconds, fetchHistory, fetchSnapshot, fetchWorkerStatus, initialSnapshot]);
+  }, [effectiveRefreshSeconds, fetchHistory, fetchSnapshot, fetchWorkerStatus, initialSnapshot, showOperations]);
   useEffect(() => {
     if (visibleTrendPoints.length === 0) {
       setHoveredTrendDate(null);
@@ -557,7 +562,9 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
             />
             <div>
             <p className="text-xs uppercase tracking-[0.35em] text-sky-200/75">Emerald Park IT</p>
-            <h1 className="mt-2 text-[clamp(1.4rem,2.4vw,2.2rem)] font-semibold leading-tight">Emerald Park IT Ticket Dashboard</h1>
+            <h1 className="mt-2 text-[clamp(1.4rem,2.4vw,2.2rem)] font-semibold leading-tight">
+              {showOperations ? "Operations Console" : "Emerald Park IT Ticket Dashboard"}
+            </h1>
             </div>
           </div>
           <div className="text-sm md:text-right">
@@ -574,24 +581,37 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
               <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
                 Auto <span className="mono-numbers text-slate-100">{formatRefreshInterval(effectiveRefreshSeconds)}</span>
               </span>
-              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
-                Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_poll_at)}</span>
-              </span>
-              <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
-                Heavy Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_heavy_refresh_at)}</span>
-              </span>
+              {showOperations ? (
+                <>
+                  <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                    Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_poll_at)}</span>
+                  </span>
+                  <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200">
+                    Heavy Next <span className="mono-numbers text-slate-100">{formatRelativeFuture(workerStatus?.next_scheduled_heavy_refresh_at)}</span>
+                  </span>
+                </>
+              ) : null}
             </div>
             <p className={`mt-1 ${stale ? "text-rose-300" : "text-emerald-300"}`}>
               {refreshing ? "Refreshing now" : "Data feed healthy"}
             </p>
             <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
-              <a href="/audit" className="nav-link">Agent Audit Page</a>
-              <a href="/api/export/daily-summary?meta=1" className="nav-link">Export Summary</a>
-              <button type="button" className="nav-link" onClick={() => void forceRefreshAllMetrics()} disabled={forceRefreshing}>
-                {forceRefreshing ? "Refreshing..." : "Force Refresh Metrics"}
-              </button>
+              {showOperations ? (
+                <>
+                  <a href="/" className="nav-link">Main Dashboard</a>
+                  <a href="/api/export/daily-summary?meta=1" className="nav-link">Export Summary</a>
+                  <button type="button" className="nav-link" onClick={() => void forceRefreshAllMetrics()} disabled={forceRefreshing}>
+                    {forceRefreshing ? "Refreshing..." : "Force Refresh Metrics"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <a href="/audit" className="nav-link">Agent Audit Page</a>
+                  <a href="/ops" className="nav-link">Operations Console</a>
+                </>
+              )}
             </div>
-            {forceRefreshMessage ? <p className="mt-1 text-sky-200">{forceRefreshMessage}</p> : null}
+            {showOperations && forceRefreshMessage ? <p className="mt-1 text-sky-200">{forceRefreshMessage}</p> : null}
             {fetchError ? <p className="mt-1 text-rose-300">{fetchError}</p> : null}
           </div>
         </header>
@@ -602,138 +622,146 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
           </section>
         ) : null}
 
-        <section className="grid grid-cols-12 gap-4">
-          <SummaryTile label="Unsolved" value={formatCount(snapshot.unsolved_count)} tone="text-[var(--kpi-highlight)]" />
-          <SummaryTile label="SLA (7d)" value={formatPercent(snapshot.sla_health_7d.combined_within_target_pct)} tone="text-emerald-300" />
-          <SummaryTile label="Created Today" value={formatCount(snapshot.daily_summary.created_today)} />
-          <SummaryTile label="Solved (7d)" value={formatCount(snapshot.daily_summary.solved_count_7d)} />
-          <SummaryTile label="Backlog >7d" value={formatCount(snapshot.backlog_aging.over_7d)} tone="text-amber-200" />
-          <SummaryTile label="Unassigned >2h" value={formatCount(snapshot.assignment_lag.over_2h)} tone="text-amber-200" />
-        </section>
+        {!showOperations ? (
+          <section className="grid grid-cols-12 gap-4">
+            <SummaryTile label="Unsolved" value={formatCount(snapshot.unsolved_count)} tone="text-[var(--kpi-highlight)]" />
+            <SummaryTile label="SLA (7d)" value={formatPercent(snapshot.sla_health_7d.combined_within_target_pct)} tone="text-emerald-300" />
+            <SummaryTile label="Created Today" value={formatCount(snapshot.daily_summary.created_today)} />
+            <SummaryTile label="Solved (7d)" value={formatCount(snapshot.daily_summary.solved_count_7d)} />
+            <SummaryTile label="Backlog >7d" value={formatCount(snapshot.backlog_aging.over_7d)} tone="text-amber-200" />
+            <SummaryTile label="Unassigned >2h" value={formatCount(snapshot.assignment_lag.over_2h)} tone="text-amber-200" />
+          </section>
+        ) : null}
 
-        <section className="grid grid-cols-12 gap-4">
-          <article className="metric-surface col-span-12 p-4">
-            <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Operations Health</h2>
-            <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-200 md:grid-cols-4">
-              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Consecutive Failures</p>
-                <p className="mono-numbers text-base">{formatCount(workerStatus?.consecutive_failures ?? 0)}</p>
-              </div>
-              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Limit Remaining</p>
-                <p className="mono-numbers text-base">
-                  {workerStatus?.rate_limit_remaining ?? "n/a"} / {workerStatus?.rate_limit_limit ?? "n/a"}
-                </p>
-              </div>
-              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Reset</p>
-                <p className="mono-numbers text-base">
-                  {workerStatus?.rate_limit_reset_seconds !== null && workerStatus?.rate_limit_reset_seconds !== undefined
-                    ? `${workerStatus.rate_limit_reset_seconds}s`
-                    : "n/a"}
-                </p>
-              </div>
-              <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Last Error</p>
-                <p className="truncate text-sm text-slate-200">{workerStatus?.last_error ?? "None"}</p>
-              </div>
-            </div>
-          </article>
-        </section>
-
-        <section className="grid grid-cols-12 gap-4">
-          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-7">
-            <div className="border-b border-slate-400/20 px-4 py-3">
-              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">History (Supabase, Last 30 Runs)</h2>
-            </div>
-            <div className="p-3">
-              {historyChart.points.length > 0 ? (
-                <>
-                  <svg viewBox={`0 0 ${historyChart.chartWidth} ${historyChart.chartHeight}`} className="trend-chart-svg" role="img" aria-label="Unsolved history trend">
-                    {[0, 1, 2, 3].map((line) => {
-                      const y = historyChart.top + ((historyChart.chartHeight - historyChart.top - historyChart.bottom) * line) / 3;
-                      return <line key={`history-grid-${line}`} x1={historyChart.left} y1={y} x2={historyChart.chartWidth - historyChart.right} y2={y} className="trend-grid-line" />;
-                    })}
-                    {historyChart.path ? <path d={historyChart.path} className="trend-line-solved" /> : null}
-                    {historyChart.points.map((point) => (
-                      <circle key={`history-point-${point.generated_at}`} cx={point.x} cy={point.y} r={2.6} className="trend-point-solved" />
-                    ))}
-                  </svg>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
-                    <span>Peak unsolved: {formatCount(historyChart.maxValue)}</span>
-                    <span>Latest: {formatCount(historyChart.points[historyChart.points.length - 1]?.unsolved_count ?? 0)}</span>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-slate-300">Supabase history not available yet.</p>
-              )}
-            </div>
-          </article>
-
-          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-5">
-            <div className="border-b border-slate-400/20 px-4 py-3">
-              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Worker Reliability (Recent)</h2>
-            </div>
-            <div className="p-3">
-              <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
+        {showOperations ? (
+          <section className="grid grid-cols-12 gap-4">
+            <article className="metric-surface col-span-12 p-4">
+              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Operations Health</h2>
+              <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-200 md:grid-cols-4">
                 <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Success Rate</p>
-                  <p className="mono-numbers text-base text-emerald-300">{formatPercent(workerRunSummary.successRatePct)}</p>
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Consecutive Failures</p>
+                  <p className="mono-numbers text-base">{formatCount(workerStatus?.consecutive_failures ?? 0)}</p>
                 </div>
                 <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Avg Duration</p>
-                  <p className="mono-numbers text-base text-slate-100">{Math.round(workerRunSummary.avgDurationMs / 1000)}s</p>
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Limit Remaining</p>
+                  <p className="mono-numbers text-base">
+                    {workerStatus?.rate_limit_remaining ?? "n/a"} / {workerStatus?.rate_limit_limit ?? "n/a"}
+                  </p>
+                </div>
+                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Rate Reset</p>
+                  <p className="mono-numbers text-base">
+                    {workerStatus?.rate_limit_reset_seconds !== null && workerStatus?.rate_limit_reset_seconds !== undefined
+                      ? `${workerStatus.rate_limit_reset_seconds}s`
+                      : "n/a"}
+                  </p>
+                </div>
+                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Last Error</p>
+                  <p className="truncate text-sm text-slate-200">{workerStatus?.last_error ?? "None"}</p>
                 </div>
               </div>
-              {historyRuns.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-xs">
-                    <thead className="table-head text-left uppercase tracking-[0.12em] text-slate-400">
-                      <tr>
-                        <th className="px-2 py-1.5">Time</th>
-                        <th className="px-2 py-1.5">Mode</th>
-                        <th className="px-2 py-1.5 text-right">Dur</th>
-                        <th className="px-2 py-1.5 text-right">RL</th>
-                        <th className="px-2 py-1.5 text-right">OK</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {historyRuns.slice(-8).reverse().map((run) => (
-                        <tr key={`${run.started_at}-${run.duration_ms}`} className="table-row border-t border-slate-500/15">
-                          <td className="px-2 py-1.5">{formatClockTime(run.started_at)}</td>
-                          <td className="px-2 py-1.5">{run.snapshot_mode}</td>
-                          <td className="mono-numbers px-2 py-1.5 text-right">{Math.round(run.duration_ms / 1000)}s</td>
-                          <td className="mono-numbers px-2 py-1.5 text-right">{run.rate_limit_remaining ?? "n/a"}</td>
-                          <td className={`px-2 py-1.5 text-right ${run.success ? "text-emerald-300" : "text-rose-300"}`}>
-                            {run.success ? "Yes" : "No"}
-                          </td>
-                        </tr>
+            </article>
+          </section>
+        ) : null}
+
+        {showOperations ? (
+          <section className="grid grid-cols-12 gap-4">
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-7">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">History (Supabase, Last 30 Runs)</h2>
+              </div>
+              <div className="p-3">
+                {historyChart.points.length > 0 ? (
+                  <>
+                    <svg viewBox={`0 0 ${historyChart.chartWidth} ${historyChart.chartHeight}`} className="trend-chart-svg" role="img" aria-label="Unsolved history trend">
+                      {[0, 1, 2, 3].map((line) => {
+                        const y = historyChart.top + ((historyChart.chartHeight - historyChart.top - historyChart.bottom) * line) / 3;
+                        return <line key={`history-grid-${line}`} x1={historyChart.left} y1={y} x2={historyChart.chartWidth - historyChart.right} y2={y} className="trend-grid-line" />;
+                      })}
+                      {historyChart.path ? <path d={historyChart.path} className="trend-line-solved" /> : null}
+                      {historyChart.points.map((point) => (
+                        <circle key={`history-point-${point.generated_at}`} cx={point.x} cy={point.y} r={2.6} className="trend-point-solved" />
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="text-sm text-slate-300">Worker history not available yet.</p>
-              )}
-            </div>
-          </article>
-        </section>
-
-        <details className="metric-surface p-4">
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Metric Guide</summary>
-          <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-300 md:grid-cols-2">
-            {metricDefinitions.map((metric) => (
-              <div key={metric.name} className="rounded-md border border-slate-500/20 bg-slate-900/30 px-3 py-2">
-                <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{metric.name}</p>
-                <p className="mt-1 text-slate-200">{metric.meaning}</p>
+                    </svg>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
+                      <span>Peak unsolved: {formatCount(historyChart.maxValue)}</span>
+                      <span>Latest: {formatCount(historyChart.points[historyChart.points.length - 1]?.unsolved_count ?? 0)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-slate-300">Supabase history not available yet.</p>
+                )}
               </div>
-            ))}
-          </div>
-        </details>
+            </article>
 
-        <details className="metric-surface p-4" open>
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Management Overview</summary>
-          <div className="mt-4 grid grid-cols-12 gap-4">
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-5">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Worker Reliability (Recent)</h2>
+              </div>
+              <div className="p-3">
+                <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Success Rate</p>
+                    <p className="mono-numbers text-base text-emerald-300">{formatPercent(workerRunSummary.successRatePct)}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Avg Duration</p>
+                    <p className="mono-numbers text-base text-slate-100">{Math.round(workerRunSummary.avgDurationMs / 1000)}s</p>
+                  </div>
+                </div>
+                {historyRuns.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-xs">
+                      <thead className="table-head text-left uppercase tracking-[0.12em] text-slate-400">
+                        <tr>
+                          <th className="px-2 py-1.5">Time</th>
+                          <th className="px-2 py-1.5">Mode</th>
+                          <th className="px-2 py-1.5 text-right">Dur</th>
+                          <th className="px-2 py-1.5 text-right">RL</th>
+                          <th className="px-2 py-1.5 text-right">OK</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historyRuns.slice(-8).reverse().map((run) => (
+                          <tr key={`${run.started_at}-${run.duration_ms}`} className="table-row border-t border-slate-500/15">
+                            <td className="px-2 py-1.5">{formatClockTime(run.started_at)}</td>
+                            <td className="px-2 py-1.5">{run.snapshot_mode}</td>
+                            <td className="mono-numbers px-2 py-1.5 text-right">{Math.round(run.duration_ms / 1000)}s</td>
+                            <td className="mono-numbers px-2 py-1.5 text-right">{run.rate_limit_remaining ?? "n/a"}</td>
+                            <td className={`px-2 py-1.5 text-right ${run.success ? "text-emerald-300" : "text-rose-300"}`}>
+                              {run.success ? "Yes" : "No"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-300">Worker history not available yet.</p>
+                )}
+              </div>
+            </article>
+          </section>
+        ) : null}
+
+        {!showOperations ? (
+          <>
+            <details className="metric-surface p-4">
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Metric Guide</summary>
+              <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-300 md:grid-cols-2">
+                {metricDefinitions.map((metric) => (
+                  <div key={metric.name} className="rounded-md border border-slate-500/20 bg-slate-900/30 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{metric.name}</p>
+                    <p className="mt-1 text-slate-200">{metric.meaning}</p>
+                  </div>
+                ))}
+              </div>
+            </details>
+
+            <details className="metric-surface p-4" open>
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Management Overview</summary>
+              <div className="mt-4 grid grid-cols-12 gap-4">
             <article className="metric-surface col-span-12 overflow-hidden lg:col-span-4">
               <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Group Workload</h2></div>
               <div className="overflow-x-auto">
@@ -817,12 +845,12 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
                 ) : null}
               </div>
             </article>
-          </div>
-        </details>
+              </div>
+            </details>
 
-        <details className="metric-surface p-4">
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Operational Queues</summary>
-          <div className="mt-4 grid grid-cols-12 gap-4">
+            <details className="metric-surface p-4">
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Operational Queues</summary>
+              <div className="mt-4 grid grid-cols-12 gap-4">
             {widgetToggles.unassigned ? (
               <article className="metric-surface col-span-12 overflow-hidden lg:col-span-6">
                 <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Unassigned Tickets</h2></div>
@@ -846,12 +874,12 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
                 </div>
               </article>
             ) : null}
-          </div>
-        </details>
+              </div>
+            </details>
 
-        <details className="metric-surface p-4">
-          <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Audit And Risk</summary>
-          <div className="mt-4 grid grid-cols-12 gap-4">
+            <details className="metric-surface p-4">
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Audit And Risk</summary>
+              <div className="mt-4 grid grid-cols-12 gap-4">
             <article className="metric-surface col-span-12 overflow-hidden">
               <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">High Priority Risk</h2></div>
               <div className="overflow-x-auto">
@@ -861,13 +889,13 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
                 </table>
               </div>
             </article>
-          </div>
-        </details>
+              </div>
+            </details>
 
-        {(widgetToggles.topSolvers || widgetToggles.ticketsByTag) ? (
-          <details className="metric-surface p-4">
-            <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Tags And Solvers</summary>
-            <div className="mt-4 grid grid-cols-12 gap-4">
+            {(widgetToggles.topSolvers || widgetToggles.ticketsByTag) ? (
+              <details className="metric-surface p-4">
+                <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Tags And Solvers</summary>
+                <div className="mt-4 grid grid-cols-12 gap-4">
               {widgetToggles.topSolvers ? (
                 <article className="metric-surface col-span-12 p-4 lg:col-span-6">
                   <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Top Solvers (7d)</h2>
@@ -894,11 +922,11 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
                   </ul>
                 </article>
               ) : null}
-            </div>
-          </details>
-        ) : null}
+                </div>
+              </details>
+            ) : null}
 
-        <section className="grid grid-cols-12 gap-4">
+            <section className="grid grid-cols-12 gap-4">
           <article className="metric-surface col-span-12 overflow-hidden xl:col-span-4">
             <div className="border-b border-slate-400/20 px-4 py-3">
               <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Are We Keeping Up? ({trendWindowDays}d)</h2>
@@ -1013,7 +1041,9 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
               </div>
             </div>
           </article>
-        </section>
+            </section>
+          </>
+        ) : null}
       </div>
     </main>
   );
