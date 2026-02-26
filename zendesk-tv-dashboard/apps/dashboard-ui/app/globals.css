@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 :root {
+  --font-main: "Segoe UI", "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "Consolas", "SFMono-Regular", "Roboto Mono", Menlo, Monaco, monospace;
   --bg-deep: #06101b;
   --bg-panel: linear-gradient(165deg, rgba(12, 35, 53, 0.84) 0%, rgba(8, 24, 39, 0.88) 100%);
   --border-panel: rgba(120, 190, 227, 0.3);
