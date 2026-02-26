@@ -197,7 +197,8 @@ export function Dashboard({
   const [refreshing, setRefreshing] = useState(false);
   const [forceRefreshing, setForceRefreshing] = useState(false);
   const [forceRefreshMessage, setForceRefreshMessage] = useState<string | null>(null);
-  const [trendWindowDays, setTrendWindowDays] = useState<7 | 14 | 30>(7);
+  const [trendWindowDays, setTrendWindowDays] = useState<7 | 30 | 60 | 90 | 120>(30);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [hoveredTrendDate, setHoveredTrendDate] = useState<string | null>(null);
   const [hoveredNetFlowDate, setHoveredNetFlowDate] = useState<string | null>(null);
   const effectiveRefreshSeconds = Math.max(5, snapshot?.poll_interval_seconds ?? refreshSeconds);
@@ -316,7 +317,11 @@ export function Dashboard({
         oldestUnassignedId: null as number | null
       };
     }
-    const backlogGrowingDays = visibleTrendPoints.filter((point) => point.intake_count > point.solved_count).length;
+    const chronologicalHistory = [...historyDaily].reverse();
+    const backlogGrowingDays =
+      chronologicalHistory.length > 1
+        ? chronologicalHistory.slice(1).filter((point, index) => point.unsolved_count > chronologicalHistory[index].unsolved_count).length
+        : visibleTrendPoints.filter((point) => point.intake_count > point.solved_count).length;
     const topGroup = snapshot.group_workload
       .slice()
       .sort((left, right) => right.open_count - left.open_count)[0];
@@ -327,7 +332,7 @@ export function Dashboard({
       highRiskCount: snapshot.high_priority_risk_tickets.length,
       oldestUnassignedId: snapshot.assignment_lag.oldest_unassigned[0]?.id ?? null
     };
-  }, [snapshot, visibleTrendPoints]);
+  }, [historyDaily, snapshot, visibleTrendPoints]);
 
   const fetchSnapshot = useCallback(async (): Promise<ZendeskSnapshot | null> => {
     setRefreshing(true);
@@ -362,17 +367,20 @@ export function Dashboard({
     }
   }, []);
 
-  const fetchHistory = useCallback(async (): Promise<void> => {
+  const fetchHistory = useCallback(async (limitDays: number, includeRuns: boolean): Promise<void> => {
     try {
-      const [dailyResponse, runsResponse] = await Promise.all([
-        fetch("/api/history/daily?limit=30", { cache: "no-store" }),
-        fetch("/api/history/worker-runs?limit=30", { cache: "no-store" })
-      ]);
+      const requests: Array<Promise<Response>> = [
+        fetch(`/api/history/daily?limit=${encodeURIComponent(String(limitDays))}`, { cache: "no-store" })
+      ];
+      if (includeRuns) {
+        requests.push(fetch("/api/history/worker-runs?limit=30", { cache: "no-store" }));
+      }
+      const [dailyResponse, runsResponse] = await Promise.all(requests);
       if (dailyResponse.ok) {
         const payload = (await dailyResponse.json()) as { items?: HistoryDailyItem[] };
         setHistoryDaily(Array.isArray(payload.items) ? payload.items : []);
       }
-      if (runsResponse.ok) {
+      if (runsResponse?.ok) {
         const payload = (await runsResponse.json()) as { items?: HistoryWorkerRunItem[] };
         setHistoryRuns(Array.isArray(payload.items) ? payload.items : []);
       }
@@ -430,19 +438,19 @@ export function Dashboard({
     if (!initialSnapshot) {
       void fetchSnapshot();
     }
+    void fetchHistory(trendWindowDays, showOperations);
     if (showOperations) {
       void fetchWorkerStatus();
-      void fetchHistory();
     }
     const interval = setInterval(() => {
       void fetchSnapshot();
+      void fetchHistory(trendWindowDays, showOperations);
       if (showOperations) {
         void fetchWorkerStatus();
-        void fetchHistory();
       }
     }, effectiveRefreshSeconds * 1000);
     return () => clearInterval(interval);
-  }, [effectiveRefreshSeconds, fetchHistory, fetchSnapshot, fetchWorkerStatus, initialSnapshot, showOperations]);
+  }, [effectiveRefreshSeconds, fetchHistory, fetchSnapshot, fetchWorkerStatus, initialSnapshot, showOperations, trendWindowDays]);
   useEffect(() => {
     if (visibleTrendPoints.length === 0) {
       setHoveredTrendDate(null);
@@ -479,7 +487,7 @@ export function Dashboard({
     return Date.now() - generatedAtMs > staleWarningSeconds * 1000;
   }, [snapshot, staleWarningSeconds]);
   const historyChart = useMemo(() => {
-    const points = historyDaily;
+    const points = [...historyDaily].reverse();
     const chartWidth = 980;
     const chartHeight = 180;
     const left = 20;
@@ -526,6 +534,45 @@ export function Dashboard({
     }
     return alerts;
   }, [snapshot]);
+  const reopenedCount = snapshot?.reopened_tickets_30d.length ?? 0;
+  const reopenRatePct = snapshot && snapshot.daily_summary.solved_count_7d > 0 ? (reopenedCount / snapshot.daily_summary.solved_count_7d) * 100 : 0;
+  const priorityMix = useMemo(() => {
+    if (!snapshot) {
+      return [
+        { key: "urgent", label: "Urgent", value: 0 },
+        { key: "high", label: "High", value: 0 },
+        { key: "normal", label: "Normal", value: 0 },
+        { key: "low", label: "Low", value: 0 },
+        { key: "none", label: "Unspecified", value: 0 }
+      ];
+    }
+    const counts = new Map<string, number>();
+    const add = (priority: string | null | undefined): void => {
+      const key = (priority ?? "none").toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    };
+    snapshot.attention_tickets.forEach((ticket) => add(ticket.priority));
+    snapshot.reopened_tickets_30d.forEach((ticket) => add(ticket.priority));
+    return ["urgent", "high", "normal", "low", "none"].map((key) => ({
+      key,
+      label: key === "none" ? "Unspecified" : key[0].toUpperCase() + key.slice(1),
+      value: counts.get(key) ?? 0
+    }));
+  }, [snapshot]);
+  const totalPriorityCount = Math.max(1, priorityMix.reduce((sum, item) => sum + item.value, 0));
+  const topTicketTags = snapshot?.tickets_by_tag.slice(0, 6) ?? [];
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("dashboard_theme");
+    const prefersLight = window.matchMedia?.("(prefers-color-scheme: light)").matches;
+    const initial = saved === "dark" || saved === "light" ? saved : prefersLight ? "light" : "dark";
+    setTheme(initial);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    window.localStorage.setItem("dashboard_theme", theme);
+  }, [theme]);
 
   if (!snapshot) {
     return (
@@ -569,6 +616,16 @@ export function Dashboard({
           </div>
           <div className="text-sm md:text-right">
             <div className="flex flex-wrap gap-2 text-xs md:justify-end">
+              {!showOperations ? (
+                <button
+                  type="button"
+                  className="theme-toggle"
+                  onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+                  aria-label="Toggle light and dark theme"
+                >
+                  {theme === "dark" ? "Light Mode" : "Dark Mode"}
+                </button>
+              ) : null}
               <span className="rounded-full border border-slate-500/30 bg-slate-900/35 px-2.5 py-1 text-slate-200" title={formatAbsoluteDate(snapshot.generated_at)}>
                 Updated <span className="mono-numbers text-slate-100">{formatAgeShort(snapshot.generated_at)}</span>
               </span>
@@ -595,22 +652,19 @@ export function Dashboard({
             <p className={`mt-1 ${stale ? "text-rose-300" : "text-emerald-300"}`}>
               {refreshing ? "Refreshing now" : "Data feed healthy"}
             </p>
-            <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
-              {showOperations ? (
-                <>
-                  <a href="/" className="nav-link">Main Dashboard</a>
-                  <a href="/api/export/daily-summary?meta=1" className="nav-link">Export Summary</a>
-                  <button type="button" className="nav-link" onClick={() => void forceRefreshAllMetrics()} disabled={forceRefreshing}>
-                    {forceRefreshing ? "Refreshing..." : "Force Refresh Metrics"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <a href="/audit" className="nav-link">Agent Audit Page</a>
-                  {opsUiEnabled ? <a href="/ops" className="nav-link">Operations Console</a> : null}
-                </>
-              )}
+            <div className="dashboard-nav mt-2 md:justify-end">
+              <a href="/" className={`nav-link ${showOperations ? "" : "nav-link-active"}`}>Main Dashboard</a>
+              <a href="/audit" className="nav-link">Ticket Audit</a>
+              {opsUiEnabled ? <a href="/ops" className={`nav-link ${showOperations ? "nav-link-active" : ""}`}>Operations Console</a> : null}
             </div>
+            {showOperations ? (
+              <div className="mt-2 flex flex-wrap gap-2 md:justify-end">
+                <a href="/api/export/daily-summary?meta=1" className="nav-link">Export Summary</a>
+                <button type="button" className="nav-link" onClick={() => void forceRefreshAllMetrics()} disabled={forceRefreshing}>
+                  {forceRefreshing ? "Refreshing..." : "Force Refresh Metrics"}
+                </button>
+              </div>
+            ) : null}
             {showOperations && forceRefreshMessage ? <p className="mt-1 text-sky-200">{forceRefreshMessage}</p> : null}
             {fetchError ? <p className="mt-1 text-rose-300">{fetchError}</p> : null}
           </div>
@@ -641,6 +695,171 @@ export function Dashboard({
             <SummaryTile label="Solved (7d)" value={formatCount(snapshot.daily_summary.solved_count_7d)} />
             <SummaryTile label="Backlog >7d" value={formatCount(snapshot.backlog_aging.over_7d)} tone="text-amber-200" />
             <SummaryTile label="Unassigned >2h" value={formatCount(snapshot.assignment_lag.over_2h)} tone="text-amber-200" />
+          </section>
+        ) : null}
+
+        {!showOperations ? (
+          <section className="grid grid-cols-12 gap-4 dashboard-stagger">
+            <article className="metric-surface col-span-12 p-4 md:col-span-6 xl:col-span-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Reopened (30d)</p>
+              <p className="mono-numbers mt-2 text-3xl font-semibold text-rose-200">{formatCount(reopenedCount)}</p>
+              <p className="mt-1 text-xs text-slate-400">currently open tickets reopened after solve</p>
+            </article>
+            <article className="metric-surface col-span-12 p-4 md:col-span-6 xl:col-span-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Reopen Rate Proxy</p>
+              <p className="mono-numbers mt-2 text-3xl font-semibold text-amber-200">{formatPercent(reopenRatePct)}</p>
+              <p className="mt-1 text-xs text-slate-400">reopened(30d) / solved(7d)</p>
+            </article>
+            <article className="metric-surface col-span-12 p-4 md:col-span-6 xl:col-span-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Attention Queue</p>
+              <p className="mono-numbers mt-2 text-3xl font-semibold text-cyan-200">{formatCount(snapshot.attention_tickets.length)}</p>
+              <p className="mt-1 text-xs text-slate-400">high urgency tickets needing action</p>
+            </article>
+            <article className="metric-surface col-span-12 p-4 md:col-span-6 xl:col-span-3">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Median Unassigned</p>
+              <p className="mono-numbers mt-2 text-3xl font-semibold text-emerald-200">{formatHours(snapshot.assignment_lag.median_unassigned_hours)}</p>
+              <p className="mt-1 text-xs text-slate-400">time before ticket gets assigned</p>
+            </article>
+          </section>
+        ) : null}
+
+        {!showOperations ? (
+          <section className="grid grid-cols-12 gap-4">
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-8">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Ticket Lifecycle Funnel</h2>
+              </div>
+              <div className="p-4">
+                {(() => {
+                  const funnelStages = [
+                    { label: "Created Today", value: snapshot.daily_summary.created_today, accent: "from-cyan-300 to-sky-300" },
+                    { label: "Attention Queue", value: snapshot.attention_tickets.length, accent: "from-amber-300 to-orange-300" },
+                    { label: "Unassigned >2h", value: snapshot.assignment_lag.over_2h, accent: "from-rose-300 to-red-300" },
+                    { label: "Solved (7d)", value: snapshot.daily_summary.solved_count_7d, accent: "from-emerald-300 to-teal-300" }
+                  ];
+                  const maxValue = Math.max(1, ...funnelStages.map((stage) => stage.value));
+                  return (
+                    <div className="space-y-3">
+                      {funnelStages.map((stage) => {
+                        const pct = (stage.value / maxValue) * 100;
+                        return (
+                          <div key={stage.label}>
+                            <div className="mb-1 flex items-center justify-between text-xs text-slate-300">
+                              <span className="uppercase tracking-[0.12em]">{stage.label}</span>
+                              <span className="mono-numbers text-slate-100">{formatCount(stage.value)}</span>
+                            </div>
+                            <div className="h-3 rounded-full bg-slate-900/55">
+                              <div className={`h-3 rounded-full bg-gradient-to-r ${stage.accent} transition-[width] duration-700 ease-out`} style={{ width: `${Math.max(4, pct)}%` }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            </article>
+
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-4">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Action Summary</h2>
+              </div>
+              <div className="p-4">
+                <div className="space-y-2 text-sm text-slate-200">
+                  <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Backlog Growth Days</p>
+                    <p className="mono-numbers mt-1 text-base">{formatCount(actionSummary.backlogGrowingDays)} of {formatCount(Math.max(historyDaily.length, 1))}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">High Priority Risk Queue</p>
+                    <p className="mono-numbers mt-1 text-base">{formatCount(actionSummary.highRiskCount)} tickets</p>
+                  </div>
+                  <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Oldest Unassigned</p>
+                    <p className="mono-numbers mt-1 text-base">
+                      {actionSummary.oldestUnassignedId ? (
+                        <a href={getTicketUrl(actionSummary.oldestUnassignedId)} target="_blank" rel="noreferrer" className="ticket-link">
+                          #{actionSummary.oldestUnassignedId}
+                        </a>
+                      ) : "None"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article className="metric-surface col-span-12 overflow-hidden">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Backlog Age Mix</h2>
+              </div>
+              <div className="p-4">
+                <div className="backlog-stacked-bar">
+                  {backlogBuckets.map((bucket) => (
+                    <span
+                      key={bucket.label}
+                      className={`backlog-segment ${bucket.className}`}
+                      style={{ width: `${Math.max(3, bucket.pct)}%` }}
+                      title={`${bucket.label}: ${formatCount(bucket.value)} (${bucket.pct.toFixed(1)}%)`}
+                    />
+                  ))}
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+                  {backlogBuckets.map((bucket) => (
+                    <div key={`bucket-main-${bucket.label}`} className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                      <p className="text-xs uppercase tracking-[0.12em] text-slate-400">{bucket.label}</p>
+                      <p className="mono-numbers text-base text-slate-100">{formatCount(bucket.value)}</p>
+                      <p className="mono-numbers text-xs text-slate-300">{bucket.pct.toFixed(1)}%</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </article>
+          </section>
+        ) : null}
+
+        {!showOperations ? (
+          <section className="grid grid-cols-12 gap-4 dashboard-stagger">
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-5">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Priority Mix</h2>
+              </div>
+              <div className="space-y-3 p-4">
+                {priorityMix.map((item) => {
+                  const pct = (item.value / totalPriorityCount) * 100;
+                  return (
+                    <div key={`priority-${item.key}`}>
+                      <div className="mb-1 flex items-center justify-between text-xs text-slate-300">
+                        <span>{item.label}</span>
+                        <span className="mono-numbers">{formatCount(item.value)} ({pct.toFixed(1)}%)</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-900/55">
+                        <div className="h-2 rounded-full bg-gradient-to-r from-cyan-300 to-emerald-300 transition-[width] duration-700 ease-out" style={{ width: `${Math.max(2, pct)}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </article>
+
+            <article className="metric-surface col-span-12 overflow-hidden xl:col-span-7">
+              <div className="border-b border-slate-400/20 px-4 py-3">
+                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Top Ticket Tags</h2>
+              </div>
+              <div className="grid grid-cols-1 gap-2 p-4 md:grid-cols-2">
+                {topTicketTags.length > 0 ? (
+                  topTicketTags.map((tag) => (
+                    <div key={`tag-${tag.tag}`} className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm text-slate-100">{tag.tag}</span>
+                        <span className="mono-numbers text-sm text-cyan-200">{formatCount(tag.count)}</span>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-300">Tag data not available yet.</p>
+                )}
+              </div>
+            </article>
           </section>
         ) : null}
 
