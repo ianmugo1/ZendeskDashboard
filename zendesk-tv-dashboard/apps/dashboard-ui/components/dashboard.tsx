@@ -10,6 +10,7 @@ interface DashboardProps {
   refreshSeconds: number;
   staleWarningSeconds: number;
   showOperations?: boolean;
+  opsUiEnabled?: boolean;
   widgetToggles: {
     topSolvers: boolean;
     ticketsByTag: boolean;
@@ -53,32 +54,8 @@ interface HistoryWorkerRunItem {
   rate_limit_remaining: number | null;
 }
 
-interface MetricDefinition {
-  name: string;
-  meaning: string;
-}
-
 const zendeskBaseUrl = process.env.NEXT_PUBLIC_ZENDESK_BASE_URL ?? "https://emeraldpark.zendesk.com";
 const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-const metricDefinitions: MetricDefinition[] = [
-  { name: "Unsolved", meaning: "Current count of tickets that are not solved or closed." },
-  { name: "SLA (7d)", meaning: "Percentage of recently evaluated tickets resolved within configured SLA targets." },
-  { name: "Created Today", meaning: "Number of new tickets created since local midnight in dashboard timezone." },
-  { name: "Solved (7d)", meaning: "Total tickets solved during the last 7 days." },
-  { name: "Backlog >7d", meaning: "Open tickets older than 7 days." },
-  { name: "Unassigned >2h", meaning: "Tickets without assignee for more than 2 hours." },
-  { name: "Group Workload", meaning: "Open, solved, and high-priority distribution by Zendesk group." },
-  { name: "Agent Performance", meaning: "Solved volume and SLA performance by agent over the 7-day window." },
-  { name: "Trend", meaning: "Daily intake vs solved trend with configurable window (7/14/30 days)." },
-  { name: "Unassigned Tickets", meaning: "Oldest unassigned queue items requiring assignment." },
-  { name: "Attention Tickets", meaning: "High-urgency tickets likely needing immediate action." },
-  { name: "High Priority Risk", meaning: "High/urgent tickets with stale updates above risk threshold." },
-  { name: "Top Solvers (7d)", meaning: "Agents with highest solved counts in the last 7 days." },
-  { name: "Tickets By Tag", meaning: "Open ticket counts for configured operational tags." },
-  { name: "Core Freshness", meaning: "Age of fast-refresh metrics (counts, queues, alerts)." },
-  { name: "Heavy Freshness", meaning: "Age of expensive analytics sections refreshed on slower cadence." }
-];
-const metricMeaningByName = new Map(metricDefinitions.map((metric) => [metric.name, metric.meaning]));
 
 function formatCount(value: number): string {
   return Number.isFinite(value) ? new Intl.NumberFormat("en-IE").format(value) : "0";
@@ -204,7 +181,14 @@ function SummaryTile({
   );
 }
 
-export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds, showOperations = false, widgetToggles }: DashboardProps): ReactElement {
+export function Dashboard({
+  initialSnapshot,
+  refreshSeconds,
+  staleWarningSeconds,
+  showOperations = false,
+  opsUiEnabled = true,
+  widgetToggles
+}: DashboardProps): ReactElement {
   const [snapshot, setSnapshot] = useState<ZendeskSnapshot | null>(initialSnapshot);
   const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null);
   const [historyDaily, setHistoryDaily] = useState<HistoryDailyItem[]>([]);
@@ -526,6 +510,22 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
     const avgDurationMs = Math.round(historyRuns.reduce((sum, run) => sum + run.duration_ms, 0) / historyRuns.length);
     return { successRatePct, avgDurationMs };
   }, [historyRuns]);
+  const activeUserAlerts = useMemo(() => {
+    if (!snapshot) {
+      return [];
+    }
+    const alerts = [];
+    if (snapshot.alerts.unsolved.active) {
+      alerts.push(`${snapshot.alerts.unsolved.label}: ${formatCount(snapshot.alerts.unsolved.value)} (threshold ${formatCount(snapshot.alerts.unsolved.threshold)})`);
+    }
+    if (snapshot.alerts.attention.active) {
+      alerts.push(`${snapshot.alerts.attention.label}: ${formatCount(snapshot.alerts.attention.value)} (threshold ${formatCount(snapshot.alerts.attention.threshold)})`);
+    }
+    if (snapshot.alerts.unassigned.active) {
+      alerts.push(`${snapshot.alerts.unassigned.label}: ${formatCount(snapshot.alerts.unassigned.value)} (threshold ${formatCount(snapshot.alerts.unassigned.threshold)})`);
+    }
+    return alerts;
+  }, [snapshot]);
 
   if (!snapshot) {
     return (
@@ -539,7 +539,7 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
             priority
             className="mx-auto h-24 w-24 md:h-28 md:w-28"
           />
-          <h1 className="mt-4 text-2xl font-semibold">Emerald Park IT Ticket Dashboard</h1>
+          <h1 className="mt-4 text-2xl font-semibold">{showOperations ? "Operations Console" : "Emerald Park IT Ticket Dashboard"}</h1>
           <p className="mt-4 text-slate-300">Waiting for the first snapshot from the metrics API.</p>
           {fetchError ? <p className="mt-3 text-rose-300">{fetchError}</p> : null}
         </section>
@@ -607,7 +607,7 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
               ) : (
                 <>
                   <a href="/audit" className="nav-link">Agent Audit Page</a>
-                  <a href="/ops" className="nav-link">Operations Console</a>
+                  {opsUiEnabled ? <a href="/ops" className="nav-link">Operations Console</a> : null}
                 </>
               )}
             </div>
@@ -619,6 +619,17 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
         {stale ? (
           <section className="metric-surface alert-strip px-4 py-3 text-sm text-rose-100">
             Snapshot is stale ({formatAgeMinutes(snapshot.generated_at)}). Worker may be delayed or Zendesk rate-limited.
+          </section>
+        ) : null}
+
+        {!showOperations && activeUserAlerts.length > 0 ? (
+          <section className="metric-surface alert-strip px-4 py-3 text-sm text-rose-100">
+            <p className="font-semibold uppercase tracking-[0.12em]">Attention Needed</p>
+            <ul className="mt-2 space-y-1 text-rose-100/95">
+              {activeUserAlerts.map((item) => (
+                <li key={item}>• {item}</li>
+              ))}
+            </ul>
           </section>
         ) : null}
 
@@ -747,301 +758,48 @@ export function Dashboard({ initialSnapshot, refreshSeconds, staleWarningSeconds
 
         {!showOperations ? (
           <>
-            <details className="metric-surface p-4">
-              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Metric Guide</summary>
-              <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-slate-300 md:grid-cols-2">
-                {metricDefinitions.map((metric) => (
-                  <div key={metric.name} className="rounded-md border border-slate-500/20 bg-slate-900/30 px-3 py-2">
-                    <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{metric.name}</p>
-                    <p className="mt-1 text-slate-200">{metric.meaning}</p>
-                  </div>
-                ))}
-              </div>
-            </details>
-
             <details className="metric-surface p-4" open>
-              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Management Overview</summary>
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Queue Focus</summary>
               <div className="mt-4 grid grid-cols-12 gap-4">
-            <article className="metric-surface col-span-12 overflow-hidden lg:col-span-4">
-              <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Group Workload</h2></div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">Group</th><th className="px-3 py-2 text-right">Open</th><th className="px-3 py-2 text-right">Solved</th></tr></thead>
-                  <tbody>{snapshot.group_workload.slice(0, 8).map((row) => <tr key={row.group_id} className="table-row border-t border-slate-500/15"><td className="px-3 py-2">{row.group_name}</td><td className="mono-numbers px-3 py-2 text-right">{formatCount(row.open_count)}</td><td className="mono-numbers px-3 py-2 text-right">{formatCount(row.solved_count_7d)}</td></tr>)}</tbody>
-                </table>
-              </div>
-            </article>
+                {widgetToggles.unassigned ? (
+                  <article className="metric-surface col-span-12 overflow-hidden lg:col-span-6">
+                    <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Unassigned Tickets</h2></div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2 text-right">Age</th></tr></thead>
+                        <tbody>{snapshot.unassigned_tickets.slice(0, 8).map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[320px] truncate px-3 py-2">{ticket.subject}</td><td className="mono-numbers px-3 py-2 text-right">{formatHours(ticket.age_hours)}</td></tr>)}</tbody>
+                      </table>
+                    </div>
+                  </article>
+                ) : null}
 
-            <article className="metric-surface col-span-12 overflow-hidden lg:col-span-4">
-              <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Agent Performance (Top 8)</h2></div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">Agent</th><th className="px-3 py-2 text-right">Solved</th><th className="px-3 py-2 text-right">SLA %</th></tr></thead>
-                  <tbody>{snapshot.agent_performance_7d.slice(0, 8).map((row) => <tr key={row.agent_id} className="table-row border-t border-slate-500/15"><td className="px-3 py-2">{row.agent_name}</td><td className="mono-numbers px-3 py-2 text-right">{formatCount(row.solved_count_7d)}</td><td className="mono-numbers px-3 py-2 text-right">{formatPercent(row.resolution_within_target_pct)}</td></tr>)}</tbody>
-                </table>
-              </div>
-            </article>
-
-            <article className="metric-surface col-span-12 overflow-hidden lg:col-span-4">
-              <div className="flex items-center justify-between border-b border-slate-400/20 px-4 py-3">
-                <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Trend ({trendWindowDays} Days)</h2>
-                <select
-                  className="audit-input h-8 min-w-[90px] text-xs"
-                  value={trendWindowDays}
-                  onChange={(event) => setTrendWindowDays(Number.parseInt(event.target.value, 10) as 7 | 14 | 30)}
-                >
-                  <option value={7}>7 days</option>
-                  <option value={14}>14 days</option>
-                  <option value={30}>30 days</option>
-                </select>
-              </div>
-              <div className="trend-chart-panel p-3">
-                <div className="flex items-center justify-between text-xs uppercase tracking-[0.12em] text-slate-400">
-                  <div className="flex items-center gap-3">
-                    <span className="inline-flex items-center gap-1">
-                      <span className="trend-legend-dot trend-legend-intake" />
-                      Intake
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <span className="trend-legend-dot trend-legend-solved" />
-                      Solved
-                    </span>
-                  </div>
-                  <span>Peak {formatCount(trendChart.maxValue)}</span>
-                </div>
-                <div className="mt-3">
-                  <svg viewBox={`0 0 ${trendChart.chartWidth} ${trendChart.chartHeight}`} className="trend-chart-svg" role="img" aria-label="Daily intake versus solved trend">
-                    {[0, 1, 2, 3, 4].map((line) => {
-                      const y = trendChart.top + ((trendChart.chartHeight - trendChart.top - trendChart.bottom) * line) / 4;
-                      return <line key={`grid-${line}`} x1={trendChart.left} y1={y} x2={trendChart.chartWidth - trendChart.right} y2={y} className="trend-grid-line" />;
-                    })}
-                    {trendChart.intakePath ? <path d={trendChart.intakePath} className="trend-line-intake" /> : null}
-                    {trendChart.solvedPath ? <path d={trendChart.solvedPath} className="trend-line-solved" /> : null}
-                    {trendChart.points.map((point) => (
-                      <g key={`point-${point.date}`}>
-                        <circle cx={point.x} cy={point.intakeY} r={3.2} className="trend-point-intake" />
-                        <circle cx={point.x} cy={point.solvedY} r={3.2} className="trend-point-solved" />
-                        <circle
-                          cx={point.x}
-                          cy={(point.intakeY + point.solvedY) / 2}
-                          r={15}
-                          className="trend-hit-area"
-                          onMouseEnter={() => setHoveredTrendDate(point.date)}
-                          onFocus={() => setHoveredTrendDate(point.date)}
-                          tabIndex={0}
-                          aria-label={`Trend on ${formatUkDateFromYmd(point.date)}`}
-                        />
-                      </g>
-                    ))}
-                  </svg>
-                </div>
-                {activeTrendPoint ? (
-                  <div className="trend-tooltip mt-3">
-                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">{formatUkDateFromYmd(activeTrendPoint.date)}</p>
-                    <p className="mono-numbers text-sm text-slate-100">
-                      Intake: {formatCount(activeTrendPoint.intake_count)} | Solved: {formatCount(activeTrendPoint.solved_count)}
-                    </p>
-                  </div>
+                {widgetToggles.attention ? (
+                  <article className="metric-surface col-span-12 overflow-hidden lg:col-span-6">
+                    <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Attention Tickets</h2></div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2">Priority</th></tr></thead>
+                        <tbody>{snapshot.attention_tickets.slice(0, 8).map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[320px] truncate px-3 py-2">{ticket.subject}</td><td className="px-3 py-2">{ticket.priority}</td></tr>)}</tbody>
+                      </table>
+                    </div>
+                  </article>
                 ) : null}
               </div>
-            </article>
-              </div>
             </details>
 
             <details className="metric-surface p-4">
-              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Operational Queues</summary>
+              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">High Priority Risk</summary>
               <div className="mt-4 grid grid-cols-12 gap-4">
-            {widgetToggles.unassigned ? (
-              <article className="metric-surface col-span-12 overflow-hidden lg:col-span-6">
-                <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Unassigned Tickets</h2></div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2 text-right">Age</th></tr></thead>
-                    <tbody>{snapshot.unassigned_tickets.map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[320px] truncate px-3 py-2">{ticket.subject}</td><td className="mono-numbers px-3 py-2 text-right">{formatHours(ticket.age_hours)}</td></tr>)}</tbody>
-                  </table>
-                </div>
-              </article>
-            ) : null}
-
-            {widgetToggles.attention ? (
-              <article className="metric-surface col-span-12 overflow-hidden lg:col-span-6">
-                <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Attention Tickets</h2></div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2">Priority</th></tr></thead>
-                    <tbody>{snapshot.attention_tickets.map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[320px] truncate px-3 py-2">{ticket.subject}</td><td className="px-3 py-2">{ticket.priority}</td></tr>)}</tbody>
-                  </table>
-                </div>
-              </article>
-            ) : null}
-              </div>
-            </details>
-
-            <details className="metric-surface p-4">
-              <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Audit And Risk</summary>
-              <div className="mt-4 grid grid-cols-12 gap-4">
-            <article className="metric-surface col-span-12 overflow-hidden">
-              <div className="border-b border-slate-400/20 px-4 py-3"><h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">High Priority Risk</h2></div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2 text-right">Stale</th></tr></thead>
-                  <tbody>{snapshot.high_priority_risk_tickets.map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[320px] truncate px-3 py-2">{ticket.subject}</td><td className="mono-numbers px-3 py-2 text-right">{formatHours(ticket.stale_hours)}</td></tr>)}</tbody>
-                </table>
-              </div>
-            </article>
-              </div>
-            </details>
-
-            {(widgetToggles.topSolvers || widgetToggles.ticketsByTag) ? (
-              <details className="metric-surface p-4">
-                <summary className="cursor-pointer text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">Tags And Solvers</summary>
-                <div className="mt-4 grid grid-cols-12 gap-4">
-              {widgetToggles.topSolvers ? (
-                <article className="metric-surface col-span-12 p-4 lg:col-span-6">
-                  <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Top Solvers (7d)</h2>
-                  <ul className="mt-3 space-y-2">
-                    {snapshot.top_solvers.map((solver) => (
-                      <li key={solver.agent_id} className="leaderboard-item flex items-center justify-between rounded-lg px-3 py-2">
-                        <span className="truncate">{solver.agent_name}</span>
-                        <span className="mono-numbers">{formatCount(solver.solved_count)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ) : null}
-              {widgetToggles.ticketsByTag ? (
-                <article className="metric-surface col-span-12 p-4 lg:col-span-6">
-                  <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Tickets By Tag</h2>
-                  <ul className="mt-3 space-y-2">
-                    {snapshot.tickets_by_tag.map((item) => (
-                      <li key={item.tag} className="leaderboard-item flex items-center justify-between rounded-lg px-3 py-2">
-                        <span className="truncate">{item.tag}</span>
-                        <span className="mono-numbers">{formatCount(item.count)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ) : null}
-                </div>
-              </details>
-            ) : null}
-
-            <section className="grid grid-cols-12 gap-4">
-          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-4">
-            <div className="border-b border-slate-400/20 px-4 py-3">
-              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">Are We Keeping Up? ({trendWindowDays}d)</h2>
-            </div>
-            <div className="p-3">
-              <p className="mb-2 text-xs text-slate-400">Green bars mean solved more than came in. Red bars mean backlog likely grew that day.</p>
-              <svg viewBox={`0 0 ${netFlowChart.chartWidth} ${netFlowChart.chartHeight}`} className="trend-chart-svg" role="img" aria-label="Net flow chart: intake minus solved">
-                <line
-                  x1={netFlowChart.left}
-                  y1={netFlowChart.zeroY}
-                  x2={netFlowChart.chartWidth - netFlowChart.right}
-                  y2={netFlowChart.zeroY}
-                  className="trend-grid-line"
-                />
-                {netFlowChart.points.map((point) => {
-                  const ratio = Math.abs(point.delta) / netFlowChart.maxAbs;
-                  const barHeight = ratio * ((netFlowChart.usableHeight / 2) - 8);
-                  const barWidth = Math.max(8, netFlowChart.usableWidth / Math.max(1, netFlowChart.points.length) - 4);
-                  return (
-                    <g key={`delta-${point.date}`}>
-                      <rect
-                        x={point.x - barWidth / 2}
-                        y={point.delta >= 0 ? netFlowChart.zeroY - barHeight : netFlowChart.zeroY}
-                        width={barWidth}
-                        height={Math.max(2, barHeight)}
-                        className={point.delta >= 0 ? "net-flow-bar-positive" : "net-flow-bar-negative"}
-                      />
-                      <circle
-                        cx={point.x}
-                        cy={netFlowChart.zeroY}
-                        r={14}
-                        className="trend-hit-area"
-                        onMouseEnter={() => setHoveredNetFlowDate(point.date)}
-                        onFocus={() => setHoveredNetFlowDate(point.date)}
-                        tabIndex={0}
-                        aria-label={`Net flow on ${formatUkDateFromYmd(point.date)}`}
-                      />
-                    </g>
-                  );
-                })}
-              </svg>
-              {activeNetFlowPoint ? (
-                <div className="trend-tooltip mt-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">{formatUkDateFromYmd(activeNetFlowPoint.date)}</p>
-                  <p className="mono-numbers text-sm text-slate-100">
-                    Net Flow: {activeNetFlowPoint.delta > 0 ? "+" : ""}
-                    {formatCount(activeNetFlowPoint.delta)} (In {formatCount(activeNetFlowPoint.intake_count)} / Solved{" "}
-                    {formatCount(activeNetFlowPoint.solved_count)})
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          </article>
-
-          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-4">
-            <div className="border-b border-slate-400/20 px-4 py-3">
-              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">How Old Is The Backlog?</h2>
-            </div>
-            <div className="p-4">
-              <p className="mb-3 text-xs text-slate-400">This shows what share of open tickets are fresh vs aging/stale.</p>
-              <div className="backlog-stacked-bar">
-                {backlogBuckets.map((bucket) => (
-                  <span
-                    key={bucket.label}
-                    className={`backlog-segment ${bucket.className}`}
-                    style={{ width: `${Math.max(3, bucket.pct)}%` }}
-                    title={`${bucket.label}: ${formatCount(bucket.value)} (${bucket.pct.toFixed(1)}%)`}
-                  />
-                ))}
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                {backlogBuckets.map((bucket) => (
-                  <div key={`bucket-${bucket.label}`} className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                    <p className="text-xs uppercase tracking-[0.12em] text-slate-400">{bucket.label}</p>
-                    <p className="mono-numbers text-base text-slate-100">{formatCount(bucket.value)}</p>
-                    <p className="mono-numbers text-xs text-slate-300">{bucket.pct.toFixed(1)}%</p>
+                <article className="metric-surface col-span-12 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="table-head text-left text-xs uppercase tracking-[0.2em] text-slate-400"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">Subject</th><th className="px-3 py-2 text-right">Stale</th></tr></thead>
+                      <tbody>{snapshot.high_priority_risk_tickets.slice(0, 12).map((ticket) => <tr key={ticket.id} className="table-row border-t border-slate-500/15"><td className="mono-numbers px-3 py-2"><a href={getTicketUrl(ticket.id)} target="_blank" rel="noreferrer" className="ticket-link">#{ticket.id}</a></td><td className="max-w-[420px] truncate px-3 py-2">{ticket.subject}</td><td className="mono-numbers px-3 py-2 text-right">{formatHours(ticket.stale_hours)}</td></tr>)}</tbody>
+                    </table>
                   </div>
-                ))}
+                </article>
               </div>
-            </div>
-          </article>
-
-          <article className="metric-surface col-span-12 overflow-hidden xl:col-span-4">
-            <div className="border-b border-slate-400/20 px-4 py-3">
-              <h2 className="text-xs uppercase tracking-[0.2em] text-slate-300">What Needs Action Now?</h2>
-            </div>
-            <div className="p-4">
-              <div className="space-y-2 text-sm text-slate-200">
-                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Backlog Growth Days</p>
-                  <p className="mono-numbers mt-1 text-base">{formatCount(actionSummary.backlogGrowingDays)} of {formatCount(trendWindowDays)}</p>
-                </div>
-                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Most Loaded Group</p>
-                  <p className="mt-1 truncate">{actionSummary.topGroupName}</p>
-                  <p className="mono-numbers text-xs text-slate-300">{formatCount(actionSummary.topGroupOpenCount)} open tickets</p>
-                </div>
-                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">High Priority Risk Queue</p>
-                  <p className="mono-numbers mt-1 text-base">{formatCount(actionSummary.highRiskCount)} tickets</p>
-                </div>
-                <div className="rounded-md border border-slate-500/20 bg-slate-900/25 px-3 py-2">
-                  <p className="text-xs uppercase tracking-[0.12em] text-slate-400">Oldest Unassigned Ticket</p>
-                  <p className="mono-numbers mt-1 text-base">
-                    {actionSummary.oldestUnassignedId ? (
-                      <a href={getTicketUrl(actionSummary.oldestUnassignedId)} target="_blank" rel="noreferrer" className="ticket-link">
-                        #{actionSummary.oldestUnassignedId}
-                      </a>
-                    ) : "None"}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </article>
-            </section>
+            </details>
           </>
         ) : null}
       </div>

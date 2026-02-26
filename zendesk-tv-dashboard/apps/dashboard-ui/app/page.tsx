@@ -40,6 +40,7 @@ export default async function HomePage(): Promise<ReactElement> {
     attention: parseBooleanFlag(process.env.WIDGETS_ATTENTION, true),
     dailyVolume: parseBooleanFlag(process.env.WIDGETS_DAILY_VOLUME, true)
   };
+  const opsUiEnabled = parseBooleanFlag(process.env.OPS_UI_ENABLED, true);
   const initialSnapshot = await getInitialSnapshot(apiBaseUrl);
 
   return (
@@ -47,6 +48,7 @@ export default async function HomePage(): Promise<ReactElement> {
       initialSnapshot={initialSnapshot}
       refreshSeconds={refreshSeconds}
       staleWarningSeconds={staleWarningSeconds}
+      opsUiEnabled={opsUiEnabled}
       widgetToggles={widgetToggles}
     />
   );

@@ -23,7 +23,27 @@ function safeEqual(left: string, right: string): boolean {
 
 type DashboardRole = "viewer" | "analyst" | "admin" | "none";
 
+function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
+  if (!value) {
+    return defaultValue;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return defaultValue;
+}
+
 export function middleware(request: NextRequest): NextResponse {
+  const opsUiEnabled = parseBooleanFlag(process.env.OPS_UI_ENABLED, true);
+  const isOpsPath = request.nextUrl.pathname === "/ops" || request.nextUrl.pathname.startsWith("/ops/");
+  if (isOpsPath && !opsUiEnabled) {
+    return new NextResponse("Not Found", { status: 404 });
+  }
+
   const viewerUsername = process.env.DASHBOARD_BASIC_AUTH_USERNAME;
   const viewerPassword = process.env.DASHBOARD_BASIC_AUTH_PASSWORD;
   const analystUsername = process.env.DASHBOARD_ANALYST_AUTH_USERNAME;
@@ -71,6 +91,9 @@ export function middleware(request: NextRequest): NextResponse {
   const requiresAdmin = request.nextUrl.pathname.startsWith("/api/export/");
   const requiresAnalystOrAdmin = request.nextUrl.pathname.startsWith("/api/audit/presets");
   if (requiresAdmin && hasAdminCredentialsConfigured && role !== "admin") {
+    return unauthorized();
+  }
+  if (isOpsPath && !(role === "admin" || role === "analyst")) {
     return unauthorized();
   }
   if (requiresAnalystOrAdmin && (request.method === "POST" || request.method === "DELETE")) {

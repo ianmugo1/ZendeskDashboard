@@ -6,6 +6,7 @@ Internal dashboard stack for Zendesk operational metrics.
 
 - `apps/dashboard-ui`: Next.js App Router UI (Tailwind, dark TV layout, basic auth, configurable refresh).
   - `/`: management KPI dashboard
+  - `/ops`: operations console (worker health/history, refresh controls)
   - `/audit`: solved tickets audit page with agent + keyword filtering
 - `apps/metrics-api`: Express API that serves cached snapshot from Redis or file cache.
 - `apps/worker`: polling worker with light and heavy refresh modes for Zendesk aggregation.
@@ -127,6 +128,7 @@ cp .env.production.example .env.production
 - dashboard auth credentials (`DASHBOARD_BASIC_AUTH_*`, optionally analyst/admin)
 - `METRICS_API_TOKEN` (required for internal API protection)
 - rotate all `change-me` passwords/tokens before first deploy (deploy script now blocks placeholders)
+  - note: `/ops` requires analyst/admin credentials when basic auth is enabled
 
 3. Point your domain DNS A record to the server IP.
 
@@ -203,6 +205,7 @@ This outputs a timestamped archive under `backups/`.
   - `DASHBOARD_REFRESH_SECONDS`
   - `DASHBOARD_ANALYST_AUTH_USERNAME` / `DASHBOARD_ANALYST_AUTH_PASSWORD` (optional analyst role)
   - `DASHBOARD_ADMIN_AUTH_USERNAME` / `DASHBOARD_ADMIN_AUTH_PASSWORD` (optional: required for `/api/export/*`)
+  - `OPS_UI_ENABLED` (set `false` to disable `/ops` route entirely)
   - `NEXT_PUBLIC_ZENDESK_BASE_URL`
   - `WIDGETS_TOP_SOLVERS`
   - `WIDGETS_TICKETS_BY_TAG`
