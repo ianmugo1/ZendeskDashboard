@@ -23,6 +23,16 @@ function safeEqual(left: string, right: string): boolean {
 
 type DashboardRole = "viewer" | "analyst" | "admin" | "none";
 
+export function isStaticAssetPath(pathname: string): boolean {
+  if (pathname.startsWith("/_next/")) {
+    return true;
+  }
+  if (pathname === "/favicon.ico") {
+    return true;
+  }
+  return /\.[^/]+$/.test(pathname);
+}
+
 function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boolean {
   if (!value) {
     return defaultValue;
@@ -38,6 +48,10 @@ function parseBooleanFlag(value: string | undefined, defaultValue: boolean): boo
 }
 
 export function middleware(request: NextRequest): NextResponse {
+  if (isStaticAssetPath(request.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
+
   const opsUiEnabled = parseBooleanFlag(process.env.OPS_UI_ENABLED, true);
   const isOpsPath = request.nextUrl.pathname === "/ops" || request.nextUrl.pathname.startsWith("/ops/");
   if (isOpsPath && !opsUiEnabled) {
@@ -112,5 +126,5 @@ export function middleware(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"]
+  matcher: ["/((?!_next/|favicon.ico|.*\\..*).*)"]
 };

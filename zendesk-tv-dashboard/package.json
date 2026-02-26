@@ -13,7 +13,7 @@
     "dev": "npm run build --workspace @zendesk/zendesk-client && concurrently -k -n api,worker,ui -c blue,green,magenta \"npm run dev --workspace @zendesk/metrics-api\" \"npm run dev --workspace @zendesk/worker\" \"npm run dev --workspace @zendesk/dashboard-ui\"",
     "build": "npm run build --workspace @zendesk/zendesk-client && npm run build --workspace @zendesk/metrics-api && npm run build --workspace @zendesk/worker && npm run build --workspace @zendesk/dashboard-ui",
     "typecheck": "npm run build --workspace @zendesk/zendesk-client && npm run typecheck --workspace @zendesk/metrics-api && npm run typecheck --workspace @zendesk/worker && npm run typecheck --workspace @zendesk/dashboard-ui",
-    "test": "node --test --import tsx apps/worker/src/config.test.ts apps/metrics-api/src/config.test.ts packages/zendesk-client/src/client.test.ts",
+    "test": "node --test --import tsx apps/worker/src/config.test.ts apps/metrics-api/src/config.test.ts packages/zendesk-client/src/client.test.ts apps/dashboard-ui/middleware.test.ts",
     "test:e2e:ui": "npx playwright test -c apps/dashboard-ui/playwright.config.ts"
   },
   "devDependencies": {
